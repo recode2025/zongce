@@ -151,13 +151,49 @@ function maxByScore(rows: EngineCourse[]): EngineCourse {
 }
 
 /** 判定是否必修（扣分口径）：课程属性=必修 或 课程性质含「必修」 */
-function isRequired(c: EngineCourse): boolean {
+export function isRequired(c: EngineCourse): boolean {
   return c.courseAttr === '必修' || c.courseNature.includes('必修');
 }
 
 /** 专项体育课：公共必修 + 体育(一)/(二)…。「体育与健康」不折算（golden：大数据2025级1班全班 W=3） */
-function isPeCourse(c: EngineCourse): boolean {
+export function isPeCourse(c: EngineCourse): boolean {
   return c.courseNature === '公共必修课' && PE_COURSE_NAME_PATTERN.test(c.courseName);
+}
+
+export type CourseUse = 'WEIGHTED' | 'ALLPASS_ONLY' | 'EXCLUDED';
+
+export interface CourseClassification {
+  use: CourseUse;
+  /** 等级制成绩（优/良…）兜底映射出的分数（仅 WEIGHTED 时可能出现） */
+  mappedScore?: number;
+  /** 剔除原因（EXCLUDED / ALLPASS_ONLY 时存在） */
+  reason?: string;
+  /** 过程标记（缓考/非数字成绩），由调用方决定落 flags */
+  flag?: string;
+}
+
+/**
+ * 单门课程分类（引擎与导出「计算依据」共用，保证口径一致）：
+ * - WEIGHTED：计入加权（mappedScore 存在表示等级制映射，此时不进全科判定池）
+ * - ALLPASS_ONLY：公选课不计加权，但成绩计入全科加分判定池
+ * - EXCLUDED：不计入（附原因）
+ */
+export function classifyCourse(c: EngineCourse): CourseClassification {
+  if (c.isPublicElective) {
+    // 全科 85+/80+ 判定包含公选课成绩（golden：250460101 公选73→Q=0；250460102 公选83→Q=1；250460130 公选84→Q=1，30人全吻合）
+    return c.scoreValue !== null && c.scoreValue !== undefined
+      ? { use: 'ALLPASS_ONLY', reason: '公共选修课不计入加权' }
+      : { use: 'EXCLUDED', reason: '公共选修课不计入加权' };
+  }
+  if (!c.credit || c.credit <= 0) return { use: 'EXCLUDED', reason: '学分为0' };
+  if (c.scoreValue === null || c.scoreValue === undefined) {
+    if (c.scoreFlag === '缓考') return { use: 'EXCLUDED', reason: '缓考未出成绩，暂不计入', flag: RESULT_FLAGS.PENDING_DEFERRED };
+    if (c.scoreFlag === '缺考' || c.scoreFlag === '取消考试资格') return { use: 'EXCLUDED', reason: `${c.scoreFlag}，无成绩` };
+    const mapped = c.scoreText ? GRADE_CHAR_MAP[c.scoreText.trim()] : undefined;
+    if (mapped !== undefined) return { use: 'WEIGHTED', mappedScore: mapped };
+    return { use: 'EXCLUDED', reason: `非数字成绩（${c.scoreText || '空'}）`, flag: RESULT_FLAGS.NON_NUMERIC_SCORE };
+  }
+  return { use: 'WEIGHTED' };
 }
 
 export function computeStudent(
@@ -180,35 +216,18 @@ export function computeStudent(
   let peScore: number | null = null;
 
   for (const c of deduped) {
-    if (c.isPublicElective) {
-      // 全科 85+/80+ 判定包含公选课成绩（golden：250460101 公选73→Q=0；250460102 公选83→Q=1；250460130 公选84→Q=1，30人全吻合）
-      if (c.scoreValue !== null && c.scoreValue !== undefined) allPassPool.push(c);
-      excluded.push({ courseName: c.courseName, reason: '公共选修课不计入加权' });
-      continue;
+    const cl = classifyCourse(c);
+    if (cl.flag) flags.push(cl.flag);
+    // 专项体育课折算文体基础分（原口径：公选/零学分剔除后再判体育）
+    if (!c.isPublicElective && c.credit > 0 && isPeCourse(c)) peScore = c.scoreValue ?? null;
+    if (cl.use === 'WEIGHTED') {
+      // 等级制映射行计入加权但不进全科判定池（原逻辑 continue 跳过 allPassPool）
+      participating.push(cl.mappedScore !== undefined ? { ...c, scoreValue: cl.mappedScore } : c);
+      if (cl.mappedScore === undefined) allPassPool.push(c);
+    } else {
+      if (cl.use === 'ALLPASS_ONLY') allPassPool.push(c);
+      excluded.push({ courseName: c.courseName, reason: cl.reason! });
     }
-    if (!c.credit || c.credit <= 0) {
-      excluded.push({ courseName: c.courseName, reason: '学分为0' });
-      continue;
-    }
-    if (isPeCourse(c)) peScore = c.scoreValue ?? null;
-    if (c.scoreValue === null || c.scoreValue === undefined) {
-      if (c.scoreFlag === '缓考') {
-        flags.push(RESULT_FLAGS.PENDING_DEFERRED);
-        excluded.push({ courseName: c.courseName, reason: '缓考未出成绩，暂不计入' });
-      } else if (c.scoreFlag === '缺考' || c.scoreFlag === '取消考试资格') {
-        excluded.push({ courseName: c.courseName, reason: `${c.scoreFlag}，无成绩` });
-      } else if (c.scoreText && GRADE_CHAR_MAP[c.scoreText.trim()] !== undefined) {
-        // 等级制成绩兜底映射（ETL 已前置映射，此处防御 DB 中未映射行）
-        participating.push({ ...c, scoreValue: GRADE_CHAR_MAP[c.scoreText.trim()] });
-        continue;
-      } else {
-        flags.push(RESULT_FLAGS.NON_NUMERIC_SCORE);
-        excluded.push({ courseName: c.courseName, reason: `非数字成绩（${c.scoreText || '空'}）` });
-      }
-      continue;
-    }
-    participating.push(c);
-    allPassPool.push(c);
   }
 
   // 学业加权

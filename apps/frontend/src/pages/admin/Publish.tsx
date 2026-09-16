@@ -42,6 +42,7 @@ function ReleaseTab({ batchId }: { batchId: string }) {
   const { message, modal } = App.useApp();
   const [rounds, setRounds] = useState<any[]>([]);
   const [days, setDays] = useState(3);
+  const [hideTop30, setHideTop30] = useState(true);
   const [loading, setLoading] = useState(false);
 
   const load = useCallback(() => {
@@ -50,6 +51,7 @@ function ReleaseTab({ batchId }: { batchId: string }) {
   useEffect(load, [load]);
 
   const active = rounds.find((r) => r.status === 'ACTIVE');
+  const isFirstRound = !active;
 
   const doRelease = () =>
     modal.confirm({
@@ -57,13 +59,14 @@ function ReleaseTab({ batchId }: { batchId: string }) {
       content: (
         <div>
           <p>当前候选版本将晋升为 PUBLISHED，成绩快照写入缓存（学生端可查），并开启公示期 {days} 天（自然日，可按工作日修正后再发布）。</p>
+          {isFirstRound && hideTop30 && <p>本轮为第一轮公示：年级前 30 名的学生端排名将隐藏（总分正常显示，二次公示起恢复）。</p>}
           <p>已发布过时本轮为「二次公示」，旧轮次自动关闭。</p>
         </div>
       ),
       onOk: async () => {
         setLoading(true);
         try {
-          const r = await releasePublish({ batchId, publicityDays: days });
+          const r = await releasePublish({ batchId, publicityDays: days, hideTopRank: isFirstRound && hideTop30 ? 30 : 0 });
           message.success(`已发布：第 ${r.round} 轮 · v${r.version} · ${r.students} 人 · 公示至 ${fmtTime(r.publicityEnd)}`);
           load();
         } catch (e) {
@@ -97,6 +100,17 @@ function ReleaseTab({ batchId }: { batchId: string }) {
       <Card size="small" title="发布操作">
         <Space wrap>
           <InputNumber min={1} max={30} value={days} onChange={(v) => setDays(v ?? 3)} addonBefore="公示期" addonAfter="天" />
+          {isFirstRound && (
+            <Radio.Group
+              value={hideTop30 ? 'hide' : 'show'}
+              onChange={(e) => setHideTop30(e.target.value === 'hide')}
+              optionType="button"
+              buttonStyle="solid"
+            >
+              <Radio.Button value="hide">前30名隐藏排名</Radio.Button>
+              <Radio.Button value="show">全部显示排名</Radio.Button>
+            </Radio.Group>
+          )}
           <Button type="primary" icon={<CloudUploadOutlined />} loading={loading} onClick={doRelease}>
             {active ? '二次公示（整批重发）' : '发布成绩'}
           </Button>
@@ -105,6 +119,14 @@ function ReleaseTab({ batchId }: { batchId: string }) {
           </Button>
           <Button icon={<ReloadOutlined />} onClick={load} />
         </Space>
+        {!isFirstRound && (
+          <Alert
+            style={{ marginTop: 12 }}
+            type="info"
+            showIcon
+            message="二次公示起排名恢复正常显示（第一轮隐藏前 30 名仅首轮生效）"
+          />
+        )}
         {active && (
           <Alert
             style={{ marginTop: 12 }}

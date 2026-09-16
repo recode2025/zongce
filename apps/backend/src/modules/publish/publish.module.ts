@@ -18,10 +18,10 @@ const DAY = 24 * 3600;
 export class PublishController {
   constructor(private prisma: PrismaService, private cache: CacheService, private audit: AuditService) {}
 
-  /** 发布（正式/二次公示）。publicityDays 公示天数（默认 3，可按工作日修正后传实际值） */
+  /** 发布（正式/二次公示）。publicityDays 公示天数（默认 3）；hideTopRank 仅第一轮生效：隐藏年级前 N 名的排名 */
   @Post('release')
   @Roles(Role.GRADE_ADMIN, Role.SUPER_ADMIN)
-  async release(@Body() dto: { batchId: string; publicityDays?: number; publicityEnd?: string }, @CurrentUser() user: JwtUser) {
+  async release(@Body() dto: { batchId: string; publicityDays?: number; publicityEnd?: string; hideTopRank?: number }, @CurrentUser() user: JwtUser) {
     const batch = await this.prisma.batch.findUnique({ where: { id: dto.batchId } });
     if (!batch) throw new BadRequestException('批次不存在');
     if (![BatchStatus.CALCULATED, BatchStatus.PUBLICITY].includes(batch.status as BatchStatus)) {
@@ -29,6 +29,8 @@ export class PublishController {
     }
     const lastRound = await this.prisma.publishSnapshot.findFirst({ where: { batchId: batch.id }, orderBy: { round: 'desc' } });
     const round = (lastRound?.round ?? 0) + 1;
+    // 隐藏前 N 名排名：仅第一轮公示生效（二次公示起恢复显示）
+    const hideTopRank = round === 1 ? Math.max(0, Math.floor(Number(dto.hideTopRank) || 0)) : 0;
 
     const publicityEnd = dto.publicityEnd ? new Date(dto.publicityEnd) : new Date(Date.now() + Math.max(1, dto.publicityDays ?? 3) * DAY);
 
@@ -53,14 +55,14 @@ export class PublishController {
           publicityEnd,
           status: 'ACTIVE',
           publishedBy: user.id,
-          statsJson: { students: results.length, version, avg: Number((results.reduce((s, r) => s + Number(r.totalScore), 0) / results.length).toFixed(2)) },
+          statsJson: { students: results.length, version, avg: Number((results.reduce((s, r) => s + Number(r.totalScore), 0) / results.length).toFixed(2)), hideTopRank },
         },
       });
       await tx.batch.update({ where: { id: batch.id }, data: { status: BatchStatus.PUBLICITY } });
     });
 
     // 物化 Redis 快照（TTL = 公示期 + 30 天兜底）
-    await this.materialize(batch.id, results.map((r) => ({ row: r, student: r.student })), round, publicityEnd);
+    await this.materialize(batch.id, results.map((r) => ({ row: r, student: r.student })), round, publicityEnd, hideTopRank);
 
     await this.prisma.announcement.create({
       data: {
@@ -99,7 +101,9 @@ export class PublishController {
         await tx.calcResult.update({ where: { batchId_studentId_version: { batchId: batch.id, studentId: r.studentId, version: batch.currentCalcVersion } }, data: { status: 'PUBLISHED' } });
       }
     });
-    await this.materialize(batch.id, changed.map((r) => ({ row: r, student: r.student })), snapshot.round, snapshot.publicityEnd);
+    // 增量刷新沿用本轮公示的隐藏排名配置（存于 statsJson）
+    const hideTopRank = Number((snapshot.statsJson as any)?.hideTopRank) || 0;
+    await this.materialize(batch.id, changed.map((r) => ({ row: r, student: r.student })), snapshot.round, snapshot.publicityEnd, hideTopRank);
     await this.audit.log({ operatorId: user.id, action: 'PUBLISH_INCREMENTAL', resourceType: 'batch', resourceId: batch.id, detail: { refreshed: changed.length } });
     return { refreshed: changed.length, students: changed.map((r) => r.student.studentNo) };
   }
@@ -233,12 +237,14 @@ export class PublishController {
     });
     if (!row) throw new BadRequestException('成绩尚未发布');
     const snapshot = await this.prisma.publishSnapshot.findFirst({ where: { batchId, status: 'ACTIVE' } });
-    const payload = this.buildPayload(row, row.student, snapshot?.round ?? 1, snapshot?.publicityEnd ?? null);
+    const payload = this.buildPayload(row, row.student, snapshot?.round ?? 1, snapshot?.publicityEnd ?? null, Number((snapshot?.statsJson as any)?.hideTopRank) || 0);
     await this.cache.set(key, JSON.stringify(payload), 7 * DAY).catch(() => undefined);
     return { source: 'db', ...payload };
   }
 
-  private buildPayload(row: any, student: { studentNo: string; name: string; className: string }, round: number, publicityEnd: Date | null) {
+  /** hideTopRank：年级前 N 名在第一轮公示隐藏排名（rankGrade/rankClass 置空 + rankHidden 标记） */
+  private buildPayload(row: any, student: { studentNo: string; name: string; className: string }, round: number, publicityEnd: Date | null, hideTopRank = 0) {
+    const hide = hideTopRank > 0 && row.rankGrade != null && row.rankGrade <= hideTopRank;
     return {
       batchId: row.batchId,
       calcVersion: row.version,
@@ -249,8 +255,9 @@ export class PublishController {
       name: student.name,
       className: student.className,
       totalScore: Number(row.totalScore),
-      rankGrade: row.rankGrade,
-      rankClass: row.rankClass,
+      rankGrade: hide ? null : row.rankGrade,
+      rankClass: hide ? null : row.rankClass,
+      rankHidden: hide,
       moral: { base: Number(row.moralBase), bonus: Number(row.moralBonus), total: Number(row.moralTotal) },
       academic: {
         weighted: Number(row.academicWeighted),
@@ -272,11 +279,11 @@ export class PublishController {
     };
   }
 
-  private async materialize(batchId: string, rows: { row: any; student: { studentNo: string; name: string; className: string } }[], round: number, publicityEnd: Date) {
+  private async materialize(batchId: string, rows: { row: any; student: { studentNo: string; name: string; className: string } }[], round: number, publicityEnd: Date, hideTopRank = 0) {
     const ttlSec = Math.ceil((publicityEnd.getTime() - Date.now()) / 1000) + 30 * DAY;
     const items = rows.map(({ row, student }) => ({
       key: REDIS_KEYS.scoreSnapshot(batchId, student.studentNo),
-      value: JSON.stringify(this.buildPayload(row, student, round, publicityEnd)),
+      value: JSON.stringify(this.buildPayload(row, student, round, publicityEnd, hideTopRank)),
       ttlSec: Math.max(ttlSec, DAY),
     }));
     await this.cache.msetBulk(items);

@@ -69,10 +69,10 @@ export function asArray<T = any>(res: any): T[] {
   return [];
 }
 
-/** GET/POST/PATCH 快捷封装（直接返回 data） */
-export const get = <T = any>(url: string, params?: any) => http.get<T, T>(url, { params });
-export const post = <T = any>(url: string, body?: any) => http.post<T, T>(url, body);
-export const patch = <T = any>(url: string, body?: any) => http.patch<T, T>(url, body);
+/** GET/POST/PATCH 快捷封装（解包 axios 响应，直接返回 data） */
+export const get = <T = any>(url: string, params?: any) => http.get(url, { params }).then((r) => r.data as T);
+export const post = <T = any>(url: string, body?: any) => http.post(url, body).then((r) => r.data as T);
+export const patch = <T = any>(url: string, body?: any) => http.patch(url, body).then((r) => r.data as T);
 
 /** 上传（multipart，白名单/限额由后端校验） */
 export function uploadFile<T = any>(url: string, file: File): Promise<T> {

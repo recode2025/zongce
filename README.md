@@ -64,6 +64,7 @@ docker compose up -d --build
 - `mysql:8.0`（utf8mb4 + 每晚 mysqldump）、`redis:7-alpine`（AOF）、`backend`（非 root）、`frontend`（nginx 静态+/api 反代+SPA 回退；profile 隔离，`docker compose --profile frontend up -d` 启用，默认 `http://localhost:8080`）
 - backend 镜像构建走 `build:image`（先 `prisma generate` 再 tsc），首次启动自动 `prisma migrate deploy`（见 Dockerfile/entrypoint）
 - uploads 卷持久化所有上传与导出产物
+- 套阿里云全站加速（DCDN）：真实 IP 透传/回源 token 校验/index.html 防白屏已内置，见 `docs/阿里云CDN部署.md`
 
 ## 学期全流程（10 分钟走完）
 

@@ -47,6 +47,39 @@ body,
   justify-content: center;
   box-shadow: 0 8px 20px rgba(47, 84, 235, 0.4);
 }
+/* 登录验证码：输入框 + 图片并排 */
+.zc-captcha-row {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+.zc-captcha-row .ant-input-affix-wrapper {
+  flex: 1;
+}
+.zc-captcha-img {
+  flex: none;
+  width: 120px;
+  height: 40px;
+  border: 1px solid #d9d9d9;
+  border-radius: 8px;
+  background: #eef2fb;
+  cursor: pointer;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  color: #595959;
+  font-size: 12px;
+  overflow: hidden;
+}
+.zc-captcha-img:hover {
+  border-color: #2f54eb;
+}
+.zc-captcha-img svg {
+  display: block;
+  border-radius: 7px;
+}
 
 /* ---------- 学生端外壳 ---------- */
 .zc-stu-shell {
@@ -121,6 +154,22 @@ body,
 }
 .zc-stu-nav-item.active,
 .zc-stu-nav-item:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.14);
+}
+.zc-stu-logout {
+  border: 0;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.75);
+  font-size: 14px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+}
+.zc-stu-logout:hover {
   color: #fff;
   background: rgba(255, 255, 255, 0.14);
 }
@@ -247,6 +296,30 @@ body,
   border-color: #2f54eb;
   box-shadow: 0 0 0 3px rgba(47, 84, 235, 0.15);
 }
+/* 卡片内文字允许收缩换行，防止溢出卡片边界（grid/flex item 默认 min-width:auto） */
+.zc-mode-grid > *,
+.zc-rule-grid > * {
+  min-width: 0;
+}
+.zc-rule-card .ant-card-body {
+  min-width: 0;
+}
+.zc-rule-card .ant-space {
+  max-width: 100%;
+  flex-wrap: wrap;
+}
+/* antd Space 默认 align-items:center，竖向 Space 子项按内容收缩（shrink-to-fit），
+   长文本会把 .ant-space-item 撑到超出卡片宽度；stretch 让子项占满容器宽 */
+.zc-rule-card .ant-space-vertical {
+  align-items: stretch;
+}
+.zc-rule-card .ant-space-item {
+  min-width: 0;
+  max-width: 100%;
+}
+.zc-rule-card .ant-typography {
+  max-width: 100%;
+}
 
 /* 上传文件行 */
 .zc-file-list {
@@ -258,13 +331,14 @@ body,
 .zc-file-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  flex-wrap: wrap; /* 窄屏时文件名与编辑控件分行，避免错位溢出 */
+  gap: 6px 8px;
   padding: 6px 10px;
   background: #f7f8fc;
   border-radius: 8px;
 }
 .zc-file-name {
-  flex: 1;
+  flex: 1 1 calc(100% - 160px); /* 宽屏占满首行剩余，窄屏自动换到独立行 */
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

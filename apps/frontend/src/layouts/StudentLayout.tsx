@@ -6,6 +6,7 @@ import {
   CloudUploadOutlined,
   ProfileOutlined,
   LineChartOutlined,
+  LogoutOutlined,
 } from '@ant-design/icons';
 import { useAuth } from '../store/auth';
 
@@ -20,9 +21,11 @@ const TABS = [
 export default function StudentLayout() {
   const nav = useNavigate();
   const loc = useLocation();
-  const { user } = useAuth();
+  const { user, logout } = useAuth();
   const screens = Grid.useBreakpoint();
   const isDesktop = screens.md;
+
+  const doLogout = () => logout().finally(() => nav('/login', { replace: true }));
 
   const activeKey = useMemo(() => {
     const hit = TABS.find((t) => loc.pathname.startsWith(t.key));
@@ -38,19 +41,25 @@ export default function StudentLayout() {
           <div className="zc-stu-sub">{user ? `${user.name} · ${user.className ?? ''}` : ''}</div>
         </div>
       </div>
-      {isDesktop && (
-        <nav className="zc-stu-nav">
-          {TABS.map((t) => (
-            <button
-              key={t.key}
-              className={`zc-stu-nav-item ${activeKey === t.key ? 'active' : ''}`}
-              onClick={() => nav(t.key)}
-            >
-              {t.label}
-            </button>
-          ))}
-        </nav>
-      )}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 4, flex: 'none' }}>
+        {isDesktop && (
+          <nav className="zc-stu-nav">
+            {TABS.map((t) => (
+              <button
+                key={t.key}
+                className={`zc-stu-nav-item ${activeKey === t.key ? 'active' : ''}`}
+                onClick={() => nav(t.key)}
+              >
+                {t.label}
+              </button>
+            ))}
+          </nav>
+        )}
+        <button className="zc-stu-logout" onClick={doLogout} aria-label="退出登录" title="退出登录">
+          <LogoutOutlined />
+          {isDesktop && <span style={{ marginLeft: 4 }}>退出</span>}
+        </button>
+      </div>
     </div>
   );
 

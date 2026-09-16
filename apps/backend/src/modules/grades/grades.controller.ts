@@ -1,5 +1,5 @@
-import { BadRequestException, Body, Controller, DefaultValuePipe, Get, Module, Param, ParseIntPipe, Patch, Query } from '@nestjs/common';
-import { IsOptional, IsString } from 'class-validator';
+import { BadRequestException, Body, Controller, DefaultValuePipe, Get, Module, Param, ParseIntPipe, Patch, Post, Query } from '@nestjs/common';
+import { IsArray, IsOptional, IsString } from 'class-validator';
 import { IssueResolution, Role } from '@zc/shared';
 import { PrismaService } from '../../prisma/prisma.module';
 import { AuditService } from '../audit/audit.service';
@@ -10,6 +10,15 @@ class ResolveDto {
   /** 必须加装饰器：全局 ValidationPipe whitelist 会剥离无装饰器属性（否则裁决结果静默丢失） */
   @IsString() resolution: IssueResolution; // MANUAL_PICKED / EXCLUDED / INCLUDED / PENDING
   @IsOptional() @IsString() pickedGradeId?: string;
+  @IsOptional() @IsString() note?: string;
+}
+
+class BatchResolveDto {
+  @IsString() batchId!: string;
+  @IsString() resolution!: 'INCLUDED' | 'EXCLUDED';
+  /** 指定记录 id 列表；缺省时按 type（再缺省为全部门禁类）批量 */
+  @IsOptional() @IsArray() ids?: string[];
+  @IsOptional() @IsString() type?: string;
   @IsOptional() @IsString() note?: string;
 }
 
@@ -86,6 +95,31 @@ export class GradesController {
       ip,
     });
     return { success: true };
+  }
+
+  /** 批量裁决：按勾选 ids，或按类型（缺省=门禁类 MISSING/DEFERRED_EMPTY/DISQUALIFIED/NON_NUMERIC_SCORE）作用于全部待裁决 */
+  @Post('issues/batch-resolve')
+  @Roles(Role.GRADE_ADMIN)
+  async batchResolve(@Body() dto: BatchResolveDto, @CurrentUser('id') operatorId: string, @ClientIp() ip: string) {
+    if (dto.resolution !== 'INCLUDED' && dto.resolution !== 'EXCLUDED') throw new BadRequestException('批量裁决仅支持 计入/剔除');
+    const where: any = { batchId: dto.batchId, resolution: 'PENDING' };
+    if (dto.ids?.length) where.id = { in: dto.ids };
+    else if (dto.type) where.issueType = dto.type;
+    else where.issueType = { in: ['MISSING', 'DEFERRED_EMPTY', 'DISQUALIFIED', 'NON_NUMERIC_SCORE'] };
+
+    const { count } = await this.prisma.gradeIssue.updateMany({
+      where,
+      data: { resolution: dto.resolution, resolvedBy: operatorId, resolvedAt: new Date(), note: dto.note?.slice(0, 500) ?? '批量裁决' },
+    });
+    await this.audit.log({
+      operatorId,
+      action: 'GRADE_RESOLVE',
+      resourceType: 'gradeIssue',
+      resourceId: dto.batchId,
+      detail: { batch: true, resolution: dto.resolution, scope: dto.ids?.length ? { ids: dto.ids.length } : { type: dto.type ?? 'GATE_TYPES' }, count },
+      ip,
+    });
+    return { count };
   }
 
   /** 学生成绩明细 */

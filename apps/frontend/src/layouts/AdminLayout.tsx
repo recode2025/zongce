@@ -6,6 +6,7 @@ import {
   ExportOutlined,
   FileProtectOutlined,
   FileSearchOutlined,
+  KeyOutlined,
   LogoutOutlined,
   PartitionOutlined,
   ProfileOutlined,
@@ -72,10 +73,13 @@ export default function AdminLayout() {
               items: [
                 { key: 'role', label: `${user?.name}（${user ? ROLE_TEXT[user.role] : ''}）`, disabled: true },
                 { type: 'divider' },
+                { key: 'pwd', icon: <KeyOutlined />, label: '修改密码' },
                 { key: 'logout', icon: <LogoutOutlined />, label: '退出登录', danger: true },
               ],
               onClick: ({ key }) => {
-                if (key === 'logout') {
+                if (key === 'pwd') {
+                  nav('/change-password');
+                } else if (key === 'logout') {
                   logout().finally(() => nav('/login', { replace: true }));
                 }
               },

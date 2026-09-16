@@ -87,14 +87,14 @@ export class StudentsImportService {
         // 班级变动时同步用户的 classId 语境（JWT 里的 classId 实时从 student 取）
         summary.updated++;
       } else {
-        // 创建登录账号：学号即账号，初始密码按规则生成，首登强制改密
+        // 创建登录账号：学号即账号，初始密码按规则生成；学生首登不强制改密（仅管理员强制）
         const user = await this.prisma.user.create({
           data: {
             username: studentNo,
             name,
             role: Role.STUDENT,
             passwordHash: await argon2.hash(initialPassword(studentNo)),
-            mustChangePwd: true,
+            mustChangePwd: false,
           },
         });
         await this.prisma.student.create({

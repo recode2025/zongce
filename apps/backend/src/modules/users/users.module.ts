@@ -62,7 +62,7 @@ export class UsersController {
   async create(@Body() dto: CreateUserDto, @CurrentUser('id') operatorId: string, @ClientIp() ip: string) {
     const hash = await argon2.hash(dto.password ?? 'Zc@' + Math.random().toString(36).slice(2, 10));
     const user = await this.prisma.user.create({
-      data: { username: dto.username, name: dto.name, role: dto.role, passwordHash: hash, mustChangePwd: true, grade: dto.grade },
+      data: { username: dto.username, name: dto.name, role: dto.role, passwordHash: hash, mustChangePwd: dto.role !== Role.STUDENT, grade: dto.grade },
     });
     await this.audit.log({ operatorId, action: 'USER_UPDATE', resourceType: 'user', resourceId: user.id, detail: { action: 'create', role: dto.role }, ip });
     return { id: user.id };
@@ -73,7 +73,7 @@ export class UsersController {
   async update(@Param('id') id: string, @Body() dto: UpdateUserDto, @CurrentUser('id') operatorId: string, @ClientIp() ip: string) {
     const data: any = { name: dto.name, role: dto.role, status: dto.status, grade: dto.grade };
     if (dto.password) data.passwordHash = await argon2.hash(dto.password);
-    if (dto.password) data.mustChangePwd = true;
+    if (dto.password) data.mustChangePwd = dto.role !== Role.STUDENT;
     Object.keys(data).forEach((k) => data[k] === undefined && delete data[k]);
     await this.prisma.user.update({ where: { id }, data });
     await this.audit.log({ operatorId, action: 'USER_UPDATE', resourceType: 'user', resourceId: id, detail: { fields: Object.keys(dto) }, ip });
@@ -87,7 +87,7 @@ export class UsersController {
     const students = await this.prisma.student.findMany({ where: { userId: { in: dto.ids } } });
     for (const s of students) {
       const pwd = initialPassword(s.studentNo);
-      await this.prisma.user.update({ where: { id: s.userId! }, data: { passwordHash: await argon2.hash(pwd), mustChangePwd: true, failedCount: 0, lockedUntil: null } });
+      await this.prisma.user.update({ where: { id: s.userId! }, data: { passwordHash: await argon2.hash(pwd), mustChangePwd: false, failedCount: 0, lockedUntil: null } });
     }
     await this.audit.log({ operatorId, action: 'USER_UPDATE', detail: { action: 'reset_password_batch', count: students.length }, ip });
     return { count: students.length };

@@ -111,49 +111,113 @@ export class GradesImportService {
       if (records.length % 500 === 0) await ctx.setProgress((records.length / parsed.rows.length) * 100);
     }
 
-    // 分块写入（exact 去重：同 hash 幂等跳过；skipDuplicates 在 SQLite 不可用，改为预查过滤）
+    // 分块写入。DB 唯一键为 (studentId,termKey,courseCode,examType,rawLineHash) 且【不含 batchId】：
+    // - 文件内重复行：仅保留首行
+    // - 本批次已导入：rawLineHash 幂等跳过
+    // - 其他批次已导入（同学期重复建批/批次重建）：成绩行按学期全局唯一，迁移关联到本批次（calc 按 batchId 读成绩，直接跳过会导致本批次无成绩）
     const CHUNK = 500;
-    const existingHashes = new Set<string>();
-    for (let i = 0; i < records.length; i += 1000) {
-      const hashes = records.slice(i, i + 1000).map((x) => x.rawLineHash);
-      const found = await this.prisma.courseGrade.findMany({
-        where: { batchId, rawLineHash: { in: hashes } },
-        select: { rawLineHash: true },
-      });
-      found.forEach((f) => existingHashes.add(f.rawLineHash));
+    const uniqKey = (x: RowRecord) => `${x.studentId}|${x.termKey}|${x.courseCode}|${x.examType}|${x.rawLineHash}`;
+
+    // 1) 文件内重复行：仅保留首行
+    const seenInFile = new Set<string>();
+    const deduped: RowRecord[] = [];
+    let dupInFile = 0;
+    let dupFirstRowNo = 0;
+    for (const x of records) {
+      const k = uniqKey(x);
+      if (seenInFile.has(k)) {
+        dupInFile++;
+        dupFirstRowNo ||= x.rowNo;
+        continue;
+      }
+      seenInFile.add(k);
+      deduped.push(x);
     }
-    const fresh = records.filter((x) => !existingHashes.has(x.rawLineHash));
-    summary.skipped = records.length - fresh.length;
+    if (dupInFile) {
+      summary.skipped += dupInFile;
+      if (summary.skippedRows.length < 200) summary.skippedRows.push({ row: dupFirstRowNo, reason: `文件内重复 ${dupInFile} 行（同学生同课程同考试类型），仅保留首行` });
+    }
+
+    // 2) 库内已存在（跨批次预查：hash → 所在 batchId）
+    const existing = new Map<string, string>();
+    for (let i = 0; i < deduped.length; i += 1000) {
+      const hashes = deduped.slice(i, i + 1000).map((x) => x.rawLineHash);
+      const found = await this.prisma.courseGrade.findMany({
+        where: { rawLineHash: { in: hashes } },
+        select: { rawLineHash: true, batchId: true },
+      });
+      found.forEach((f) => existing.set(f.rawLineHash, f.batchId));
+    }
+    const sameBatch = new Set([...existing.entries()].filter(([, b]) => b === batchId).map(([h]) => h));
+    const crossBatchHashes = [...existing.entries()].filter(([, b]) => b !== batchId).map(([h]) => h);
+    if (crossBatchHashes.length) {
+      for (let i = 0; i < crossBatchHashes.length; i += CHUNK) {
+        const stale = await this.prisma.courseGrade.findMany({
+          where: { rawLineHash: { in: crossBatchHashes.slice(i, i + CHUNK) }, batchId: { not: batchId } },
+          select: { id: true },
+        });
+        const ids = stale.map((s) => s.id);
+        if (!ids.length) continue;
+        // 旧批次上挂着的自动异常随迁移清理（本批次 rebuildIssues 会按新关联重建）
+        await this.prisma.gradeIssue.deleteMany({ where: { courseGradeId: { in: ids }, resolution: 'PENDING', resolvedBy: null } });
+        await this.prisma.courseGrade.updateMany({ where: { id: { in: ids } }, data: { batchId } });
+      }
+      if (summary.skippedRows.length < 200) summary.skippedRows.push({ row: 0, reason: `${crossBatchHashes.length} 行已存在于其他批次（同学期成绩全局唯一），已迁移关联到本批次` });
+    }
+
+    // 3) 待插入集：本批次已有 → 幂等跳过；其他批次已有 → 上一步已迁移关联到本批次，同样不再插入
+    //    （迁移过的行若再插入会撞唯一键 —— 唯一键不含 batchId，库中该 hash 已存在）
+    const sameBatchRows = deduped.filter((x) => sameBatch.has(x.rawLineHash));
+    if (sameBatchRows.length) {
+      summary.skipped += sameBatchRows.length;
+      if (summary.skippedRows.length < 200)
+        summary.skippedRows.push({ row: sameBatchRows[0].rowNo, reason: `${sameBatchRows.length} 行本批次已导入过，幂等跳过` });
+    }
+    const fresh = deduped.filter((x) => !existing.has(x.rawLineHash));
 
     let inserted = 0;
     for (let i = 0; i < fresh.length; i += CHUNK) {
       const chunk = fresh.slice(i, i + CHUNK);
-      const r = await this.prisma.courseGrade.createMany({
-        data: chunk.map((x) => ({
-          batchId,
-          studentId: x.studentId,
-          termKey: x.termKey,
-          courseCode: x.courseCode,
-          courseName: x.courseName,
-          courseNature: x.courseNature,
-          courseAttr: x.courseAttr,
-          credit: x.credit,
-          hours: x.hours,
-          scoreText: x.scoreText,
-          scoreValue: x.scoreValue,
-          scoreFlag: x.scoreFlag,
-          examType: x.examType,
-          makeupTerm: x.makeupTerm,
-          isPublicElective: x.isPublicElective,
-          rawLineHash: x.rawLineHash,
-          rowNo: x.rowNo,
-        })),
-      });
-      inserted += r.count;
+      const data = chunk.map((x) => ({
+        batchId,
+        studentId: x.studentId,
+        termKey: x.termKey,
+        courseCode: x.courseCode,
+        courseName: x.courseName,
+        courseNature: x.courseNature,
+        courseAttr: x.courseAttr,
+        credit: x.credit,
+        hours: x.hours,
+        scoreText: x.scoreText,
+        scoreValue: x.scoreValue,
+        scoreFlag: x.scoreFlag,
+        examType: x.examType,
+        makeupTerm: x.makeupTerm,
+        isPublicElective: x.isPublicElective,
+        rawLineHash: x.rawLineHash,
+        rowNo: x.rowNo,
+      }));
+      // 兜底：整块撞唯一键（并发导入等极端情况）时降级逐行插入，静默跳过已存在行（SQLite 不支持 skipDuplicates）
+      let count = 0;
+      try {
+        count = (await this.prisma.courseGrade.createMany({ data })).count;
+      } catch (e: any) {
+        if (e?.code !== 'P2002') throw e;
+        for (const d of data) {
+          try {
+            count += (await this.prisma.courseGrade.createMany({ data: [d] })).count;
+          } catch (e2: any) {
+            if (e2?.code !== 'P2002') throw e2;
+            summary.skipped++;
+            if (summary.skippedRows.length < 200) summary.skippedRows.push({ row: d.rowNo, reason: '该行已存在（唯一键冲突），跳过' });
+          }
+        }
+      }
+      inserted += count;
       await ctx.setProgress(50 + (i / records.length) * 40);
     }
     summary.inserted = inserted;
-    summary.updated = 0; // 重复行已由 rawLineHash 幂等跳过
+    summary.updated = crossBatchHashes.length; // 跨批次迁移关联的行；同批次重复行由 rawLineHash 幂等跳过
 
     // 重建成绩类异常队列（清除自动生成且未人工处理的，保留人工裁决记录）
     await this.rebuildIssues(batchId, termKey, ctx);

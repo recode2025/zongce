@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Alert, App, Button, Card, Drawer, Input, Modal, Select, Space, Table, Tag, Typography } from 'antd';
-import { ExperimentOutlined, ReloadOutlined, ThunderboltOutlined } from '@ant-design/icons';
-import { ClassInfo, fetchCalcDetail, fetchCalcResults, fetchCalcVersions, fetchClasses, runCalc } from '../../api';
+import { ExperimentOutlined, FileExcelOutlined, ReloadOutlined, ThunderboltOutlined } from '@ant-design/icons';
+import { ClassInfo, createExport, downloadFile, fetchCalcDetail, fetchCalcResults, fetchCalcVersions, fetchClasses, runCalc } from '../../api';
 import { errMsg } from '../../api/client';
 import { BatchSelect, FlagTag, fmtTime } from '../../components/common';
 import JobProgress from '../../components/JobProgress';
@@ -20,7 +20,7 @@ export default function Calc() {
   const [rows, setRows] = useState<any[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
-  const [job, setJob] = useState<{ jobId: string; dryRun: boolean } | null>(null);
+  const [job, setJob] = useState<{ jobId: string; kind: 'DRY' | 'RUN' | 'EXPORT' } | null>(null);
   const [detail, setDetail] = useState<any>(null);
 
   useEffect(() => {
@@ -60,12 +60,21 @@ export default function Calc() {
       onOk: async () => {
         try {
           const r = await runCalc(batchId, dryRun);
-          setJob({ jobId: r.jobId, dryRun });
+          setJob({ jobId: r.jobId, kind: dryRun ? 'DRY' : 'RUN' });
         } catch (e) {
           message.error(errMsg(e));
         }
       },
     });
+
+  const doExportAcademic = async () => {
+    try {
+      const r = await createExport({ batchId, scope: 'ACADEMIC' });
+      setJob({ jobId: r.jobId, kind: 'EXPORT' });
+    } catch (e) {
+      message.error(errMsg(e));
+    }
+  };
 
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
@@ -78,6 +87,9 @@ export default function Calc() {
           <Button type="primary" icon={<ThunderboltOutlined />} disabled={!batchId} onClick={() => doRun(false)}>
             正式计算
           </Button>
+          <Button icon={<FileExcelOutlined />} disabled={!batchId} onClick={doExportAcademic}>
+            导出学业分
+          </Button>
           <Button icon={<ReloadOutlined />} onClick={() => { loadVersions(); load(); }}>
             刷新
           </Button>
@@ -85,13 +97,18 @@ export default function Calc() {
       </Card>
 
       {job && (
-        <Card size="small" title={job.dryRun ? '试算任务' : '计算任务'}>
+        <Card size="small" title={job.kind === 'DRY' ? '试算任务' : job.kind === 'EXPORT' ? '学业分导出任务' : '计算任务'}>
           <JobProgress
             jobId={job.jobId}
             onDone={(j) => {
               const s = j.summary ?? {};
+              if (job.kind === 'EXPORT') {
+                message.success(`学业分导出完成：${s.students} 人 · v${s.version}`);
+                if (s.fileUuid) downloadFile(s.fileUuid, s.fileName).catch((e) => message.error(errMsg(e)));
+                return;
+              }
               message.success(
-                job.dryRun
+                job.kind === 'DRY'
                   ? `试算完成：${s.students} 人${s.changed ? `，${s.changed} 人有差异` : ''}`
                   : `计算完成：版本 v${s.version} · ${s.students} 人`,
               );

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Alert,
   App,
@@ -53,6 +54,7 @@ interface UploadedItem {
 export default function Apply() {
   const { message } = App.useApp();
   const { user } = useAuth();
+  const nav = useNavigate();
   const [batch, setBatch] = useState<any>(null);
   const [mode, setMode] = useState<Mode | null>(null);
   const [step, setStep] = useState(0);
@@ -305,7 +307,7 @@ export default function Apply() {
                   className={`zc-rule-card ${rule?.id === r.id ? 'active' : ''}`}
                   onClick={() => setRule(r)}
                 >
-                  <Space direction="vertical" size={2}>
+                  <Space direction="vertical" size={2} style={{ width: '100%' }}>
                     <Typography.Text strong>{r.name}</Typography.Text>
                     <Space size={4} wrap>
                       {r.defaultScore != null && <Tag color="blue">{r.defaultScore} 分</Tag>}
@@ -313,8 +315,9 @@ export default function Apply() {
                       {r.caps?.takeHighest && <Tag>同类取最高</Tag>}
                       {r.evidence?.some((e) => e.required) && <Tag color="orange">需佐证</Tag>}
                     </Space>
+                    {/* display:block 使 ellipsis 生效（inline span 上 overflow/ellipsis 无效，长文本会溢出卡片） */}
                     {r.description && (
-                      <Typography.Text type="secondary" style={{ fontSize: 12 }} ellipsis={{ tooltip: r.description }}>
+                      <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block' }} ellipsis={{ tooltip: r.description }}>
                         {r.description}
                       </Typography.Text>
                     )}
@@ -454,13 +457,13 @@ export default function Apply() {
           {pkgFiles.length > 0 && (
             <div className="zc-file-list" style={{ marginTop: 12 }}>
               {pkgFiles.map((f, i) => (
-                <div key={f.fileId} className="zc-file-row" style={{ flexWrap: 'wrap' }}>
+                <div key={f.fileId} className="zc-file-row">
                   <span className="zc-file-name">📎 {f.name}</span>
                   {mode === 'PKG_PV' ? (
                     <Select
                       size="small"
                       value={f.role}
-                      style={{ width: 120 }}
+                      style={{ width: 120, flex: 'none' }}
                       onChange={(v) => setPkgFiles((xs) => xs.map((x, j) => (i === j ? { ...x, role: v } : x)))}
                       options={[
                         { value: '社会实践', label: '社会实践' },
@@ -471,7 +474,7 @@ export default function Apply() {
                     <>
                       <Input
                         size="small"
-                        style={{ width: 200 }}
+                        style={{ flex: '1 1 150px', minWidth: 130 }}
                         value={f.itemName}
                         placeholder="活动/比赛/证书全称"
                         onChange={(e) => setPkgFiles((xs) => xs.map((x, j) => (i === j ? { ...x, itemName: e.target.value } : x)))}
@@ -479,7 +482,7 @@ export default function Apply() {
                       <Select
                         size="small"
                         value={f.level}
-                        style={{ width: 110 }}
+                        style={{ width: 110, flex: 'none' }}
                         onChange={(v) => setPkgFiles((xs) => xs.map((x, j) => (i === j ? { ...x, level: v } : x)))}
                         options={(Object.keys(ACTIVITY_LEVEL_LABEL) as ActivityLevel[]).map((l) => ({
                           value: l,
@@ -569,7 +572,7 @@ export default function Apply() {
               <Button type="primary" onClick={reset}>
                 再提交一项
               </Button>
-              <Button onClick={() => (window.location.hash = '#/student/applications')}>查看我的材料</Button>
+              <Button onClick={() => nav('/student/applications')}>查看我的材料</Button>
             </Space>
           </div>
         </Card>

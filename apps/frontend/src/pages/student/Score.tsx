@@ -71,8 +71,17 @@ export default function MyScore() {
                 <Statistic title="综合素质测评总分" value={score.totalScore} precision={2} valueStyle={{ fontSize: 34, fontWeight: 700 }} />
               </Col>
               <Col xs={12} sm={8}>
-                <Statistic title="年级排名" value={score.rankGrade ?? '-'} suffix="名" />
-                <Statistic title="班级排名" value={score.rankClass ?? '-'} suffix="名" valueStyle={{ fontSize: 18 }} />
+                {score.rankHidden ? (
+                  <>
+                    <Statistic title="年级排名" value="不公示" valueStyle={{ fontSize: 22 }} />
+                    <Statistic title="班级排名" value="不公示" valueStyle={{ fontSize: 16 }} />
+                  </>
+                ) : (
+                  <>
+                    <Statistic title="年级排名" value={score.rankGrade ?? '-'} suffix="名" />
+                    <Statistic title="班级排名" value={score.rankClass ?? '-'} suffix="名" valueStyle={{ fontSize: 18 }} />
+                  </>
+                )}
               </Col>
               <Col xs={24} sm={8} style={{ textAlign: 'right' }}>
                 <Space direction="vertical" size={2}>

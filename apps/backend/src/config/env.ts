@@ -40,6 +40,10 @@ export const env = {
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean),
+
+  /** 数字大外统一身份认证（CAS）：留空 casBase 即关闭 cas-login 端点 */
+  casBase: process.env.CAS_BASE || 'https://cas.dlufl.edu.cn/cas',
+  casService: process.env.CAS_SERVICE || 'https://i.dlufl.edu.cn/dcp/',
 };
 
 if (!dev && !env.jwtAccessSecret) {

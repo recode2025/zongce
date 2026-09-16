@@ -1,5 +1,5 @@
 import { Body, Controller, Get, HttpCode, Post, Req, Res } from '@nestjs/common';
-import { IsString, MinLength } from 'class-validator';
+import { IsOptional, IsString, MinLength } from 'class-validator';
 import { Request, Response } from 'express';
 import { AuthService } from './auth.service';
 import { ClientIp, CurrentUser, Public } from '../../common/decorators';
@@ -7,6 +7,8 @@ import { ClientIp, CurrentUser, Public } from '../../common/decorators';
 class LoginDto {
   @IsString() @MinLength(1) username: string;
   @IsString() @MinLength(1) password: string;
+  @IsOptional() @IsString() captchaId?: string;
+  @IsOptional() @IsString() captchaCode?: string;
 }
 
 class ChangePasswordDto {
@@ -18,6 +20,13 @@ class ChangePasswordDto {
 export class AuthController {
   constructor(private auth: AuthService) {}
 
+  /** 图形验证码：返回 svg（前端内联渲染），5 分钟有效、一次性 */
+  @Public()
+  @Get('captcha')
+  async captcha() {
+    return this.auth.issueCaptcha();
+  }
+
   @Public()
   @Post('login')
   @HttpCode(200)
@@ -25,6 +34,18 @@ export class AuthController {
     const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip || 'unknown';
     const ua = String(req.headers['user-agent'] ?? '');
     const r = await this.auth.login({ ...dto, ip, ua });
+    res.setHeader('Set-Cookie', r.refreshCookie);
+    return { accessToken: r.accessToken, user: r.user };
+  }
+
+  /** 数字大外统一身份认证（CAS）：学号 + 学校密码 */
+  @Public()
+  @Post('cas-login')
+  @HttpCode(200)
+  async casLogin(@Body() dto: LoginDto, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip || 'unknown';
+    const ua = String(req.headers['user-agent'] ?? '');
+    const r = await this.auth.casLogin({ ...dto, ip, ua });
     res.setHeader('Set-Cookie', r.refreshCookie);
     return { accessToken: r.accessToken, user: r.user };
   }

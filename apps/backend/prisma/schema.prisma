@@ -214,7 +214,7 @@ model MaterialPackage {
   studentId   String
   section     String   @db.VarChar(32) // PRACTICE_VOLUNTEER / BONUS_EVIDENCE
   status      String   @default("NOT_SUBMITTED") @db.VarChar(32)
-  zipFileId   String?  @db.VarChar(32)
+  zipFileId   String?
   namingReport Json    @default("{}")
   meta        Json     @default("{}") // 板块统计（社会实践个数/志愿服务个数/干部名称等）
   submittedAt DateTime?
@@ -225,6 +225,7 @@ model MaterialPackage {
   updatedAt   DateTime @updatedAt
   batch   Batch   @relation(fields: [batchId], references: [id])
   student Student @relation(fields: [studentId], references: [id])
+  zipFile FileObject? @relation(fields: [zipFileId], references: [id])
 
   @@unique([batchId, studentId, section])
   @@index([batchId, section, status])
@@ -397,6 +398,7 @@ model FileObject {
 
   zipEntries    ZipEntry[]
   attachments   ApplicationAttachment[]
+  materialPackages MaterialPackage[]
 
   @@index([parentZipId])
   @@index([sha256])

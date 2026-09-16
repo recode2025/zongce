@@ -66,6 +66,9 @@ services:
       context: .
       dockerfile: apps/frontend/Dockerfile
     restart: unless-stopped
+    environment:
+      # 阿里云 CDN 回源校验 token（与控制台「回源自定义头 X-Origin-Token」同值；留空 = 不校验）
+      ORIGIN_TOKEN: ${ORIGIN_TOKEN:-}
     ports:
       - "${HTTP_PORT:-8080}:80"
     depends_on:

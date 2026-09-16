@@ -44,7 +44,7 @@ export interface RuleItem {
 }
 export const fetchRuleItems = (params?: { category?: string; batchId?: string }) => get<RuleItem[]>('/rules/items', params);
 export const fetchWhitelists = (params?: { type?: string; q?: string; limit?: number }) => get<any[]>('/rules/whitelists', params);
-export const updateRuleItem = (id: string, body: any) => http.put<any, any>(`/rules/items/${id}`, body);
+export const updateRuleItem = (id: string, body: any) => http.put(`/rules/items/${id}`, body).then((r) => r.data);
 export const addWhitelist = (body: { type: string; year?: number; names: string[] }) => post('/rules/whitelists', body);
 export const removeWhitelist = (id: string) => post(`/rules/whitelists/${id}/delete`);
 
@@ -109,6 +109,9 @@ export const fetchIssues = (params: { batchId: string; type?: string; resolution
   get<{ items: GradeIssue[]; total: number; typeCounts: { issueType: string; resolution: string; _count: { _all: number } }[] }>('/grades/issues', params);
 export const fetchIssueLines = (id: string) => get<any[]>(`/grades/issues/${id}/lines`);
 export const resolveIssue = (id: string, data: { resolution: string; pickedGradeId?: string; note?: string }) => patch(`/grades/issues/${id}/resolve`, data);
+/** 批量裁决：勾选 ids 或按类型（缺省=门禁类全部待裁决），resolution 仅支持 计入/剔除 */
+export const batchResolveIssues = (data: { batchId: string; resolution: 'INCLUDED' | 'EXCLUDED'; ids?: string[]; type?: string; note?: string }) =>
+  post<{ count: number }>('/grades/issues/batch-resolve', data);
 export const fetchStudentGrades = (studentId: string, batchId: string) => get<any[]>(`/grades/students/${studentId}`, { batchId });
 
 // ---------- 申请 / 材料包 ----------
@@ -167,10 +170,19 @@ export const fetchCalcResults = (params: { batchId: string; version?: string; cl
 export const fetchCalcDetail = (studentId: string, batchId: string, version?: string) => get<any>(`/calc/results/${studentId}`, { batchId, version });
 
 // ---------- 发布 / 公示 / 异议 ----------
-export const releasePublish = (dto: { batchId: string; publicityDays?: number; publicityEnd?: string }) =>
+export const releasePublish = (dto: { batchId: string; publicityDays?: number; publicityEnd?: string; hideTopRank?: number }) =>
   post<{ round: number; version: number; students: number; publicityEnd: string }>('/publish/release', dto);
 export const incrementalPublish = (batchId: string) => post<{ refreshed: number; students?: string[]; note?: string }>('/publish/incremental', { batchId });
 export const fetchMyScore = (batchId?: string) => get<any>('/publish/scores/mine', batchId ? { batchId } : undefined);
+
+/** 综测登记表导入（班级官方模板，固定格式） */
+export function importRegistration(batchId: string, file: File) {
+  const fd = new FormData();
+  fd.append('file', file);
+  return http
+    .post(`/imports/registration?batchId=${encodeURIComponent(batchId)}`, fd, { headers: { 'Content-Type': 'multipart/form-data' } })
+    .then((r) => r.data as { jobId: string });
+}
 export const fetchRounds = (batchId: string) => get<any[]>('/publish/rounds', { batchId });
 export const submitObjection = (dto: { batchId: string; content: string; targetApplicationId?: string }) => post('/publish/objections', dto);
 export const fetchMyObjections = (batchId?: string) => get<any[]>('/publish/objections/mine', batchId ? { batchId } : undefined);
@@ -178,7 +190,7 @@ export const fetchObjections = (batchId: string, status?: string) => get<any[]>(
 export const handleObjection = (id: string, dto: { status: 'ACCEPTED' | 'REJECTED'; note?: string }) => post(`/publish/objections/${id}/handle`, dto);
 
 // ---------- 导出 ----------
-export const createExport = (dto: { batchId: string; scope: 'CLASS' | 'GRADE'; classId?: string; version?: number }) => post<{ jobId: string }>('/exports', dto);
+export const createExport = (dto: { batchId: string; scope: 'CLASS' | 'GRADE' | 'ACADEMIC'; classId?: string; version?: number }) => post<{ jobId: string }>('/exports', dto);
 export const fetchExportHistory = (batchId?: string) => get<any[]>('/exports/history', batchId ? { batchId } : undefined);
 
 // ---------- 看板 / 系统 ----------

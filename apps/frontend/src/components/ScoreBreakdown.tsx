@@ -29,7 +29,7 @@ export default function ScoreBreakdown({ breakdown, courseSummary, flags }: { br
 
       {courseSummary && (
         <Card size="small" title="课程汇总">
-          <Descriptions size="small" column={4} bordered>
+          <Descriptions size="small" column={{ xs: 1, sm: 2, md: 3, lg: 4 }} bordered>
             <Descriptions.Item label="计入课程数">{courseSummary.courseCount}</Descriptions.Item>
             <Descriptions.Item label="总学分">{courseSummary.totalCredit}</Descriptions.Item>
             <Descriptions.Item label="加权均分">{courseSummary.weightedAvg ?? '-'}</Descriptions.Item>
@@ -45,7 +45,7 @@ export default function ScoreBreakdown({ breakdown, courseSummary, flags }: { br
               pagination={false}
               dataSource={courseSummary.excluded}
               columns={[
-                { title: '未计入课程', dataIndex: 'courseName' },
+                { title: '未计入课程', dataIndex: 'courseName', ellipsis: { showTitle: true } },
                 { title: '原因', dataIndex: 'reason', render: (r: string) => <Typography.Text type="secondary">{r}</Typography.Text> },
               ]}
             />

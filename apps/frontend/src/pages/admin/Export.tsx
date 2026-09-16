@@ -11,7 +11,7 @@ export default function ExportCenter() {
   const { message } = App.useApp();
   const [batchId, setBatchId] = useState('');
   const [classes, setClasses] = useState<ClassInfo[]>([]);
-  const [scope, setScope] = useState<'CLASS' | 'GRADE'>('GRADE');
+  const [scope, setScope] = useState<'CLASS' | 'GRADE' | 'ACADEMIC'>('GRADE');
   const [classId, setClassId] = useState<string>();
   const [jobId, setJobId] = useState('');
   const [history, setHistory] = useState<any[]>([]);
@@ -47,7 +47,7 @@ export default function ExportCenter() {
 
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-      <Card size="small" title="导出综测结果（30 列模板 · 与 大数据2025级1班.xlsx 严格一致）">
+      <Card size="small" title="导出综测结果（全年级/单班为 30 列模板；学业分为单表：加权/加分/扣分/学业总分/排名）">
         <Space direction="vertical" size="middle" style={{ width: '100%' }}>
           <Space wrap>
             <BatchSelect value={batchId} onChange={(v) => { setBatchId(v); setJobId(''); }} />
@@ -62,6 +62,7 @@ export default function ExportCenter() {
             >
               <Radio.Button value="GRADE">全年级</Radio.Button>
               <Radio.Button value="CLASS">按班级</Radio.Button>
+              <Radio.Button value="ACADEMIC">学业分</Radio.Button>
             </Radio.Group>
             {scope === 'CLASS' && (
               <Select

@@ -1,7 +1,7 @@
 import { BadRequestException, ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as argon2 from 'argon2';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { Role } from '@zc/shared';
 import { PrismaService } from '../../prisma/prisma.module';
 import { CacheService } from '../../cache/cache.service';
@@ -9,6 +9,8 @@ import { AuditService } from '../audit/audit.service';
 import { JwtUser } from '../../common/decorators';
 import { rateLimit } from '../../common/utils/rate-limit';
 import { env } from '../../config/env';
+import { CasService } from './cas/cas.service';
+import { genCaptchaSvg } from './captcha';
 
 const REFRESH_COOKIE = 'zc_rt';
 
@@ -19,11 +21,31 @@ export class AuthService {
     private jwt: JwtService,
     private cache: CacheService,
     private audit: AuditService,
+    private cas: CasService,
   ) {}
+
+  // ---------- 验证码 ----------
+
+  /** 签发图形验证码：答案存 cache 5 分钟，登录时一次性校验后即焚 */
+  async issueCaptcha() {
+    const { text, svg } = genCaptchaSvg();
+    const captchaId = randomUUID();
+    await this.cache.set(`captcha:${captchaId}`, text.toLowerCase(), 300);
+    return { captchaId, svg };
+  }
+
+  private async verifyCaptcha(captchaId?: string, code?: string) {
+    const expect = captchaId ? await this.cache.get(`captcha:${captchaId}`) : null;
+    if (expect) await this.cache.del(`captcha:${captchaId}`); // 一次性：无论对错都作废
+    if (!expect || !code?.trim() || code.trim().toLowerCase() !== expect) {
+      throw new BadRequestException('验证码错误或已过期，请刷新后重试');
+    }
+  }
 
   // ---------- 登录 ----------
 
-  async login(opts: { username: string; password: string; ip: string; ua: string }) {
+  async login(opts: { username: string; password: string; ip: string; ua: string; captchaId?: string; captchaCode?: string }) {
+    await this.verifyCaptcha(opts.captchaId, opts.captchaCode); // 先验验证码（不消耗登录限流）
     const username = opts.username.trim();
     // 双重限流：IP 维度 + 账号维度（防爆破）
     await rateLimit(this.cache, { scope: 'login-ip', id: opts.ip, limit: 20, windowSec: 60 });
@@ -60,9 +82,61 @@ export class AuthService {
 
     const jwtUser = this.toJwtUser(user);
     const accessToken = await this.signAccess(jwtUser);
-    const refreshToken = await this.issueRefresh(user.id, opts.ip, opts.ua);
+    // 注意取 .raw：issueRefresh 返回 {id, raw}，直接拼对象会让 cookie 变成 [object Object]
+    const rt = await this.issueRefresh(user.id, opts.ip, opts.ua);
 
-    return { accessToken, refreshToken, refreshCookie: `${REFRESH_COOKIE}=${refreshToken}; Path=/api/v1/auth; HttpOnly; SameSite=Strict; Max-Age=${env.refreshTokenTtlSec}${env.isDev ? '' : '; Secure'}`, user: jwtUser };
+    return this.loginResponse(jwtUser, accessToken, rt.raw);
+  }
+
+  // ---------- CAS 统一身份认证登录（数字大外） ----------
+
+  /** 学号 + 学校密码 → CAS 校验 → 映射平台本地账号 → 签发本平台会话 */
+  async casLogin(opts: { username: string; password: string; ip: string; ua: string; captchaId?: string; captchaCode?: string }) {
+    await this.verifyCaptcha(opts.captchaId, opts.captchaCode); // 先验验证码（不消耗登录限流）
+    const username = opts.username.trim();
+    // 与本地登录同等的双重限流（防用 CAS 通道爆破学校密码）
+    await rateLimit(this.cache, { scope: 'login-ip', id: opts.ip, limit: 20, windowSec: 60 });
+    await rateLimit(this.cache, { scope: 'login-user', id: username, limit: 8, windowSec: 900 });
+
+    // CAS 侧校验（失败直接抛出，错误文案来自学校认证页）
+    const { userInfo } = await this.cas.login(username, opts.password);
+
+    const user = await this.prisma.user.findUnique({ where: { username }, include: { student: true } });
+    if (!user || user.status === 'DISABLED') {
+      await this.audit.log({ action: 'LOGIN_FAIL', operatorName: username, ip: opts.ip, ua: opts.ua, detail: { reason: 'cas_user_not_imported' } });
+      throw new UnauthorizedException('学校认证通过，但该账号未导入本平台（或已停用），请联系管理员');
+    }
+
+    // CAS 已认证学校密码，本地密码不再强制修改；姓名不一致仅审计留痕
+    await this.prisma.user.update({ where: { id: user.id }, data: { failedCount: 0, lockedUntil: null } });
+    await this.audit.log({
+      operatorId: user.id,
+      operatorName: user.name,
+      action: 'LOGIN',
+      ip: opts.ip,
+      ua: opts.ua,
+      detail: {
+        via: 'CAS',
+        casName: userInfo.user_name,
+        casUnit: userInfo.unit_name,
+        nameMismatch: userInfo.user_name !== user.name || undefined,
+      },
+    });
+
+    const jwtUser: JwtUser = { ...this.toJwtUser(user), mustChangePwd: false };
+    const accessToken = await this.signAccess(jwtUser);
+    const rt = await this.issueRefresh(user.id, opts.ip, opts.ua);
+    return this.loginResponse(jwtUser, accessToken, rt.raw);
+  }
+
+  /** 统一登录响应（refresh token 同时以 HttpOnly cookie 下发） */
+  private loginResponse(jwtUser: JwtUser, accessToken: string, refreshToken: string) {
+    return {
+      accessToken,
+      refreshToken,
+      refreshCookie: `${REFRESH_COOKIE}=${refreshToken}; Path=/api/v1/auth; HttpOnly; SameSite=Strict; Max-Age=${env.refreshTokenTtlSec}${env.isDev ? '' : '; Secure'}`,
+      user: jwtUser,
+    };
   }
 
   // ---------- 刷新令牌轮换 ----------
@@ -135,7 +209,7 @@ export class AuthService {
       username: user.username,
       name: user.name,
       role: user.role,
-      mustChangePwd: user.mustChangePwd,
+      mustChangePwd: user.mustChangePwd && user.role !== 'STUDENT',
       student: user.student,
       grade: user.grade,
     };
@@ -149,7 +223,8 @@ export class AuthService {
       username: user.username,
       name: user.name,
       role: user.role as Role,
-      mustChangePwd: !!user.mustChangePwd,
+      // 首登强制改密仅约束管理员；学生（学号后6位初始密码）免强制
+      mustChangePwd: !!user.mustChangePwd && user.role !== 'STUDENT',
       studentId: user.student?.id,
       classId: user.student?.classId,
       grade: user.grade ?? user.student?.grade ?? null,

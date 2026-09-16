@@ -13,6 +13,7 @@ import { GRADE_ALIASES, GRADE_TARGETS, STUDENT_ALIASES, STUDENT_TARGETS, suggest
 import { parseWorkbook } from './sheet-parser';
 import { StudentsImportService } from './students-import.service';
 import { GradesImportService } from '../grades/grades-import.service';
+import { RegistrationImportService } from './registration-import.service';
 import { env } from '../../config/env';
 
 class ConfirmDto {
@@ -34,6 +35,7 @@ export class ImportsController {
     private audit: AuditService,
     private studentsImport: StudentsImportService,
     private gradesImport: GradesImportService,
+    private registrationImport: RegistrationImportService,
   ) {}
 
   /** 阶段一：上传解析 + 列映射建议（不写库） */
@@ -96,6 +98,35 @@ export class ImportsController {
         // 用完即删临时文件
         fs.unlink(filePath, () => undefined);
         await this.audit.log({ operatorId, action: 'IMPORT', resourceType: dto.kind.toLowerCase(), detail: { summary: { total: summary.total, inserted: summary.inserted, updated: summary.updated, skipped: summary.skipped } }, ip });
+        return summary as object;
+      },
+    });
+    return { jobId };
+  }
+
+  /** 综测登记表导入（班级官方模板，固定格式）：表3-表11 逐行转加分申请（SUBMITTED，走初审/复审） */
+  @Post('registration')
+  @Roles(Role.GRADE_ADMIN, Role.SUPER_ADMIN)
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 50 * 1024 * 1024 } }))
+  async registration(@UploadedFile() file: Express.Multer.File, @Query('batchId') batchId: string, @CurrentUser('id') operatorId: string, @ClientIp() ip: string) {
+    if (!file) throw new BadRequestException('缺少文件');
+    if (!batchId) throw new BadRequestException('缺少批次');
+    const jobId = await this.jobs.start({
+      kind: 'REGISTRATION',
+      batchId,
+      operatorId,
+      fileName: file.originalname,
+      payload: {},
+      handler: async (ctx) => {
+        const summary = await this.registrationImport.run(file.buffer, batchId, ctx);
+        await this.audit.log({
+          operatorId,
+          action: 'IMPORT',
+          resourceType: 'registration',
+          resourceId: batchId,
+          detail: { fileName: file.originalname, total: summary.total, inserted: summary.inserted, skipped: summary.skipped },
+          ip,
+        });
         return summary as object;
       },
     });
