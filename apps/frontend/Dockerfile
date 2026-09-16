@@ -7,7 +7,7 @@ WORKDIR /app
 # 注意：版本与根 package.json 的 packageManager 字段保持一致
 ENV npm_config_registry=https://registry.npmmirror.com
 RUN npm i -g pnpm@11.23.0
-COPY pnpm-lock.yaml pnpm-workspace.yaml package.json turbo.json ./
+COPY pnpm-lock.yaml pnpm-workspace.yaml package.json turbo.json tsconfig.base.json ./
 COPY packages/shared/package.json packages/shared/
 COPY apps/frontend/package.json apps/frontend/
 RUN pnpm install --frozen-lockfile=false

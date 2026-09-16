@@ -8,7 +8,7 @@ WORKDIR /repo
 ENV npm_config_registry=https://registry.npmmirror.com \
     PRISMA_ENGINES_MIRROR=https://registry.npmmirror.com/-/binary/prisma
 RUN npm i -g pnpm@11.23.0
-COPY pnpm-workspace.yaml package.json ./
+COPY pnpm-workspace.yaml package.json tsconfig.base.json ./
 COPY packages/shared/package.json packages/shared/
 COPY apps/backend/package.json apps/backend/
 RUN pnpm install --frozen-lockfile=false --filter @zc/backend... --filter @zc/shared...
