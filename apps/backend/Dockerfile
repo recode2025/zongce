@@ -8,6 +8,10 @@ WORKDIR /repo
 ENV npm_config_registry=https://registry.npmmirror.com \
     PRISMA_ENGINES_MIRROR=https://registry.npmmirror.com/-/binary/prisma
 RUN npm i -g pnpm@11.23.0
+# Prisma 按系统 openssl 版本挑选引擎二进制；slim 镜像无 openssl CLI 会回退
+# openssl-1.1.x 引擎并告警 may not work as expected。构建阶段装上才能在
+# prisma generate 时选中 bookworm 的 openssl-3 引擎（与运行阶段保持一致）
+RUN apt-get update && apt-get install -y --no-install-recommends openssl && rm -rf /var/lib/apt/lists/*
 COPY pnpm-workspace.yaml package.json tsconfig.base.json ./
 COPY packages/shared/package.json packages/shared/
 COPY apps/backend/package.json apps/backend/
@@ -22,7 +26,7 @@ RUN pnpm --filter @zc/shared build && pnpm --filter @zc/backend build:image
 FROM node:22-slim
 ENV NODE_ENV=production
 WORKDIR /app
-RUN apt-get update && apt-get install -y --no-install-recommends unzip && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends openssl unzip && rm -rf /var/lib/apt/lists/*
 COPY --from=build /repo ./
 RUN groupadd -r zc && useradd -r -g zc zc && mkdir -p /app/uploads /app/tmp && chown -R zc:zc /app
 USER zc
