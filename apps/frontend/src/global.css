@@ -1,0 +1,379 @@
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background: #f5f6fa;
+  -webkit-font-smoothing: antialiased;
+  font-family: -apple-system, 'PingFang SC', 'Microsoft YaHei', 'Segoe UI', sans-serif;
+}
+
+/* 数字等宽（分数表） */
+.zc-num {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- 登录 / 改密 ---------- */
+.zc-login-bg {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    radial-gradient(1200px 600px at 15% -10%, rgba(47, 84, 235, 0.28), transparent 60%),
+    radial-gradient(900px 500px at 110% 110%, rgba(114, 46, 209, 0.18), transparent 55%),
+    linear-gradient(160deg, #1c2a4f 0%, #22345f 45%, #2f54eb 130%);
+  padding: 24px 16px;
+}
+.zc-login-card {
+  width: 100%;
+  max-width: 400px;
+  border-radius: 16px;
+  box-shadow: 0 18px 50px rgba(9, 20, 64, 0.35);
+  padding: 12px 8px;
+}
+.zc-login-logo {
+  width: 56px;
+  height: 56px;
+  margin: 0 auto;
+  border-radius: 16px;
+  background: linear-gradient(135deg, #2f54eb, #1d39c4);
+  color: #fff;
+  font-size: 26px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 8px 20px rgba(47, 84, 235, 0.4);
+}
+
+/* ---------- 学生端外壳 ---------- */
+.zc-stu-shell {
+  min-height: 100%;
+  background: #f5f6fa;
+}
+.zc-mobile-canvas {
+  max-width: 768px;
+  margin: 0 auto;
+  padding: 16px 16px 88px; /* 底部 TabBar 空间 */
+}
+.zc-stu-header {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  max-width: 768px;
+  margin: 0 auto;
+  padding: 10px 16px;
+  background: linear-gradient(135deg, #2f54eb 0%, #1d39c4 100%);
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(29, 57, 196, 0.25);
+}
+.zc-stu-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.zc-stu-logo {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.18);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 16px;
+  flex: none;
+}
+.zc-stu-title {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.zc-stu-sub {
+  font-size: 12px;
+  opacity: 0.85;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 40vw;
+}
+.zc-stu-nav {
+  display: flex;
+  gap: 4px;
+  flex: none;
+}
+.zc-stu-nav-item {
+  border: 0;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.75);
+  font-size: 14px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.zc-stu-nav-item.active,
+.zc-stu-nav-item:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.14);
+}
+
+/* 底部 TabBar（<768） */
+.zc-tabbar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 200;
+  display: flex;
+  background: #fff;
+  border-top: 1px solid #eef0f4;
+  padding: 6px 0 max(6px, env(safe-area-inset-bottom));
+}
+.zc-tabbar-item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  border: 0;
+  background: transparent;
+  color: #8c93a3;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px 0;
+}
+.zc-tabbar-item.active {
+  color: #2f54eb;
+}
+.zc-tabbar-item .anticon {
+  font-size: 20px;
+}
+
+/* ---------- 批次阶段时间线（学生首页） ---------- */
+.zc-timeline {
+  display: flex;
+  gap: 4px;
+  margin: 16px 0 12px;
+  overflow-x: auto;
+}
+.zc-timeline-node {
+  flex: 1;
+  min-width: 52px;
+  text-align: center;
+  position: relative;
+}
+.zc-timeline-node:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  top: 11px;
+  left: calc(50% + 12px);
+  width: calc(100% - 24px);
+  height: 2px;
+  background: #e3e6ef;
+}
+.zc-timeline-node.done::after {
+  background: #2f54eb;
+}
+.zc-timeline-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #eceff5;
+  color: #8c93a3;
+  font-size: 12px;
+  position: relative;
+  z-index: 1;
+}
+.zc-timeline-node.done .zc-timeline-dot {
+  background: #2f54eb;
+  color: #fff;
+}
+.zc-timeline-node.current .zc-timeline-dot {
+  background: #faad14;
+  color: #fff;
+  box-shadow: 0 0 0 4px rgba(250, 173, 20, 0.25);
+}
+.zc-timeline-label {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  color: #8c93a3;
+  white-space: nowrap;
+}
+.zc-timeline-node.current .zc-timeline-label {
+  color: #d48806;
+  font-weight: 600;
+}
+.zc-timeline-node.done .zc-timeline-label {
+  color: #1d39c4;
+}
+
+/* ---------- 提交向导卡片 ---------- */
+.zc-mode-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+}
+.zc-mode-card {
+  text-align: center;
+  padding: 8px 4px;
+}
+.zc-mode-icon {
+  font-size: 30px;
+  color: #2f54eb;
+  margin-bottom: 8px;
+}
+.zc-rule-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 10px;
+}
+.zc-rule-card {
+  border: 1.5px solid #e8eaf1;
+  border-radius: 10px;
+}
+.zc-rule-card.active {
+  border-color: #2f54eb;
+  box-shadow: 0 0 0 3px rgba(47, 84, 235, 0.15);
+}
+
+/* 上传文件行 */
+.zc-file-list {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.zc-file-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: #f7f8fc;
+  border-radius: 8px;
+}
+.zc-file-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+.zc-file-size {
+  color: #8c93a3;
+  font-size: 12px;
+  flex: none;
+}
+
+/* ---------- 查分英雄卡 ---------- */
+.zc-score-hero {
+  background: linear-gradient(135deg, #f0f4ff 0%, #fff 70%);
+}
+
+/* ---------- ZipBrowser 双栏 ---------- */
+.zc-zipbrowser {
+  display: flex;
+  gap: 12px;
+  height: 100%;
+  min-height: 420px;
+}
+.zc-zip-list {
+  width: 320px;
+  flex: none;
+  overflow: auto;
+  border-right: 1px solid #eef0f4;
+  padding-right: 8px;
+}
+.zc-zip-preview {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  background: #fafafa;
+  border-radius: 8px;
+}
+.zc-preview-frame {
+  width: 100%;
+  height: 100%;
+  min-height: 420px;
+  border: 0;
+  background: #fff;
+}
+.zc-preview-img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  display: block;
+  margin: 0 auto;
+}
+@media (max-width: 768px) {
+  .zc-zipbrowser {
+    flex-direction: column;
+    height: auto;
+  }
+  .zc-zip-list {
+    width: 100%;
+    border-right: 0;
+    border-bottom: 1px solid #eef0f4;
+    padding-bottom: 8px;
+    max-height: 260px;
+  }
+  .zc-zip-preview {
+    min-height: 380px;
+  }
+}
+
+/* ---------- 管理端 ---------- */
+.zc-admin-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px;
+  color: #fff;
+  font-size: 15px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.zc-admin-brand .anticon {
+  font-size: 20px;
+  color: #85a5ff;
+}
+.zc-admin-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #fff;
+  padding: 0 20px;
+  height: 56px;
+  line-height: 56px;
+  border-bottom: 1px solid #eef0f4;
+  position: sticky;
+  top: 0;
+  z-index: 90;
+}
+.zc-admin-content {
+  padding: 16px 20px;
+  max-width: 1440px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+/* 打印隐藏 TabBar / 侧栏 */
+@media print {
+  .zc-tabbar,
+  .ant-layout-sider {
+    display: none !important;
+  }
+}

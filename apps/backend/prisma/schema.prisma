@@ -1,0 +1,479 @@
+// 综测平台数据模型（生产 MySQL；本地开发可用 scripts/make-sqlite-schema.mjs 生成 SQLite 版）
+// 约定：不使用 Prisma enum（字符串 + @zc/shared 中的 TS 枚举，保证 MySQL/SQLite 双端兼容）
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// ============ 身份与组织 ============
+
+model User {
+  id            String     @id @default(cuid())
+  username      String     @unique @db.VarChar(64)
+  passwordHash  String     @db.VarChar(255)
+  name          String     @db.VarChar(64)
+  role          String     @db.VarChar(32) // SUPER_ADMIN / GRADE_ADMIN / CLASS_LEADER / STUDENT
+  mustChangePwd Boolean    @default(true)
+  status        String     @default("ACTIVE") @db.VarChar(16)
+  failedCount   Int        @default(0)
+  lockedUntil   DateTime?
+  grade         Int? // GRADE_ADMIN 管辖年级
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+  student       Student?
+  refreshTokens RefreshToken[]
+  classLeaderOf Clazz?     @relation("ClassLeader")
+
+  @@index([role, status])
+}
+
+model Clazz {
+  id        String    @id @default(cuid())
+  name      String    @unique @db.VarChar(64) // 大数据2025级1班
+  grade     Int
+  major     String    @default("") @db.VarChar(128)
+  leaderId  String?   @unique
+  leader    User?     @relation("ClassLeader", fields: [leaderId], references: [id])
+  students  Student[]
+  createdAt DateTime  @default(now())
+
+  @@index([grade])
+}
+
+model Student {
+  id           String   @id @default(cuid())
+  studentNo    String   @unique @db.VarChar(32)
+  name         String   @db.VarChar(64)
+  gender       String?  @db.VarChar(8)
+  college      String   @default("") @db.VarChar(128)
+  major        String   @default("") @db.VarChar(128)
+  classId      String
+  className    String   @db.VarChar(64) // 冗余班级名，导出直读
+  grade        Int // 入学年份
+  enrollStatus String   @default("NORMAL") @db.VarChar(16) // NORMAL/SUSPENDED/WITHDRAWN/GRADUATED
+  enrollRaw    String?  @db.VarChar(32) // 教务原始学籍状态（有学籍/无学籍/休学…）
+  idCardEnc    String?  @db.VarChar(255) // AES-256-GCM 密文
+  userId       String?  @unique
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  clazz        Clazz    @relation(fields: [classId], references: [id])
+  user         User?    @relation(fields: [userId], references: [id])
+
+  grades       CourseGrade[]
+  applications Application[]
+  packages     MaterialPackage[]
+  results      CalcResult[]
+  issues       GradeIssue[]
+  objections   Objection[]
+
+  @@index([grade, classId])
+  @@index([enrollStatus])
+}
+
+// ============ 批次与规则 ============
+
+model Batch {
+  id                String   @id @default(cuid())
+  semesterKey       String   @unique @db.VarChar(16) // 2025-2026-1
+  name              String   @db.VarChar(64)
+  status            String   @default("DRAFT") @db.VarChar(32)
+  phases            Json     @default("[]") // [{phase,start,end}]
+  currentCalcVersion Int     @default(0)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  batchRules     BatchRule[]
+  applications   Application[]
+  packages       MaterialPackage[]
+  courseGrades   CourseGrade[]
+  gradeIssues    GradeIssue[]
+  calcResults    CalcResult[]
+  snapshots      PublishSnapshot[]
+  objections     Objection[]
+
+  @@index([status])
+}
+
+model RuleItem {
+  id            String  @id @default(cuid())
+  code          String  @unique @db.VarChar(64) // MORAL_BLOOD / ACA_COMPETITION ...
+  category      String  @db.VarChar(16) // MORAL / ACADEMIC / SPORTS
+  name          String  @db.VarChar(128)
+  description   String? @db.Text
+  detailSchema  Json    @default("[]") // DetailField[] 学生端动态表单
+  defaultScore  Decimal? @db.Decimal(5,2)
+  levelScoreMap Json? // {NATIONAL:1.5,PROVINCIAL:1.2,MUNICIPAL:1}
+  caps          Json    @default("{}") // RuleCaps
+  whitelistType String? @db.VarChar(32) // COMP_* / CERT_LANG
+  evidence      Json    @default("[]") // RuleEvidence[]
+  exportSlot    String? @db.VarChar(64) // 导出列 key
+  isActive      Boolean @default(true)
+  version       Int     @default(1)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  batchRules BatchRule[]
+  applications Application[]
+}
+
+model BatchRule {
+  id         String @id @default(cuid())
+  batchId    String
+  ruleItemId String
+  overrides  Json   @default("{}") // RuleOverrides
+  batch      Batch    @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  ruleItem   RuleItem @relation(fields: [ruleItemId], references: [id])
+
+  @@unique([batchId, ruleItemId])
+}
+
+model WhitelistEntry {
+  id     String @id @default(cuid())
+  type   String @db.VarChar(32) // COMP_A / COMP_B_NATIONAL / COMP_B_PROVINCIAL / COMP_B_MUNICIPAL / CERT_LANG
+  name   String @db.VarChar(255)
+  year   Int
+  extra  Json?
+  createdAt DateTime @default(now())
+
+  @@index([type, year])
+  @@index([name])
+}
+
+// ============ 加分申请与材料包 ============
+
+model Application {
+  id             String   @id @default(cuid())
+  batchId        String
+  studentId      String
+  classId        String // 冗余，班委数据范围过滤
+  ruleItemId     String
+  title          String   @db.VarChar(255) // 活动/证书全称（命名规范来源）
+  level          String?  @db.VarChar(16) // NATIONAL/PROVINCIAL/...
+  occurredTerm   String   @db.VarChar(16)
+  detail         Json     @default("{}")
+  declaredScore  Decimal? @db.Decimal(5,2)
+  dedupeKey      String   @default("") @db.VarChar(128) // 证书号/活动+名次
+  status         String   @default("DRAFT") @db.VarChar(32)
+  grantedScore   Decimal? @db.Decimal(5,2)
+  firstReviewerId String?
+  firstReviewedAt DateTime?
+  firstRejectReason String? @db.VarChar(500)
+  reviewerId     String?
+  reviewedAt     DateTime?
+  rejectReason   String?  @db.VarChar(500)
+  supersedesId   String?  @db.VarChar(32)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  batch    Batch      @relation(fields: [batchId], references: [id])
+  student  Student    @relation(fields: [studentId], references: [id])
+  ruleItem RuleItem   @relation(fields: [ruleItemId], references: [id])
+
+  attachments ApplicationAttachment[]
+  reviewLogs  ReviewLog[]
+  objections  Objection[]
+
+  @@unique([batchId, studentId, ruleItemId, dedupeKey])
+  @@index([batchId, status])
+  @@index([batchId, studentId])
+  @@index([batchId, classId, status])
+}
+
+model ApplicationAttachment {
+  id            String @id @default(cuid())
+  applicationId String
+  fileId        String
+  application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  file          FileObject @relation(fields: [fileId], references: [id])
+
+  @@index([applicationId])
+}
+
+model ReviewLog {
+  id            String   @id @default(cuid())
+  applicationId String
+  action        String   @db.VarChar(32) // SUBMIT/FIRST_PASS/FIRST_REJECT/APPROVE/REJECT/RESUBMIT
+  fromStatus    String?  @db.VarChar(32)
+  toStatus      String?  @db.VarChar(32)
+  operatorId    String?
+  operatorName  String   @default("") @db.VarChar(64)
+  comment       String?  @db.VarChar(500)
+  createdAt     DateTime @default(now())
+  application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@index([applicationId, createdAt])
+}
+
+model MaterialPackage {
+  id          String   @id @default(cuid())
+  batchId     String
+  studentId   String
+  section     String   @db.VarChar(32) // PRACTICE_VOLUNTEER / BONUS_EVIDENCE
+  status      String   @default("NOT_SUBMITTED") @db.VarChar(32)
+  zipFileId   String?  @db.VarChar(32)
+  namingReport Json    @default("{}")
+  meta        Json     @default("{}") // 板块统计（社会实践个数/志愿服务个数/干部名称等）
+  submittedAt DateTime?
+  firstReviewerId String?
+  firstReviewedAt DateTime?
+  firstRejectReason String? @db.VarChar(500)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  batch   Batch   @relation(fields: [batchId], references: [id])
+  student Student @relation(fields: [studentId], references: [id])
+
+  @@unique([batchId, studentId, section])
+  @@index([batchId, section, status])
+}
+
+// ============ 成绩与异常 ============
+
+model CourseGrade {
+  id            String   @id @default(cuid())
+  batchId       String
+  studentId     String
+  termKey       String   @db.VarChar(16)
+  courseCode    String   @db.VarChar(32)
+  courseName    String   @db.VarChar(128)
+  courseNature  String   @default("") @db.VarChar(32) // 公共选修课/公共必修课/专业必修课/专业选修课
+  courseAttr    String   @default("") @db.VarChar(16) // 必修/限选/公选/任选
+  credit        Decimal  @default(0) @db.Decimal(5,1)
+  hours         Int?
+  scoreText     String   @default("") @db.VarChar(32) // 原文（保留"合格"等）
+  scoreValue    Decimal? @db.Decimal(5,2)
+  scoreFlag     String   @default("") @db.VarChar(16) // ''/缺考/缓考/取消考试资格
+  examType      String   @default("期末考试") @db.VarChar(16)
+  makeupTerm    String?  @db.VarChar(16)
+  isPublicElective Boolean @default(false)
+  rawLineHash   String   @db.VarChar(64)
+  rowNo         Int
+  createdAt     DateTime @default(now())
+  batch   Batch   @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  student Student @relation(fields: [studentId], references: [id])
+
+  issues GradeIssue[]
+
+  @@unique([studentId, termKey, courseCode, examType, rawLineHash])
+  @@index([batchId, studentId])
+  @@index([batchId, termKey])
+}
+
+model GradeIssue {
+  id            String  @id @default(cuid())
+  batchId       String
+  studentId     String
+  courseGradeId String?
+  issueType     String  @db.VarChar(32)
+  resolution    String  @default("PENDING") @db.VarChar(32)
+  pickedGradeId String?
+  resolvedBy    String?
+  resolvedAt    DateTime?
+  note          String? @db.VarChar(500)
+  createdAt     DateTime @default(now())
+  batch    Batch        @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  student  Student      @relation(fields: [studentId], references: [id])
+  courseGrade CourseGrade? @relation(fields: [courseGradeId], references: [id])
+
+  @@unique([batchId, courseGradeId, issueType])
+  @@index([batchId, resolution])
+  @@index([batchId, issueType])
+  @@index([studentId, issueType])
+}
+
+model ImportJob {
+  id         String   @id @default(cuid())
+  kind       String   @db.VarChar(16) // STUDENT / GRADE / EXPORT / CALC
+  batchId    String?
+  fileName   String   @default("") @db.VarChar(255)
+  status     String   @default("PENDING") @db.VarChar(16)
+  progress   Int      @default(0)
+  summary    Json?
+  payload    Json? // 导入参数（termKey、mapping 等）
+  resultFileId String? @db.VarChar(32) // 导出类任务的产物
+  operatorId String?
+  error      String?  @db.Text
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([kind, status])
+}
+
+// ============ 计算结果与发布 ============
+
+model CalcResult {
+  id               String   @id @default(cuid())
+  batchId          String
+  studentId        String
+  version          Int
+  moralBase        Decimal  @default(9) @db.Decimal(6,2)
+  moralBonus       Decimal  @default(0) @db.Decimal(6,2)
+  moralTotal       Decimal  @default(0) @db.Decimal(6,2)
+  academicWeighted Decimal  @default(0) @db.Decimal(6,2)
+  academicAllPass  Decimal  @default(0) @db.Decimal(6,2)
+  academicBonus    Decimal  @default(0) @db.Decimal(6,2)
+  academicFailPenalty Decimal @default(0) @db.Decimal(6,2)
+  academicTotal    Decimal  @default(0) @db.Decimal(6,2)
+  sportsBase       Decimal  @default(3) @db.Decimal(6,2)
+  sportsCadre      Decimal  @default(0) @db.Decimal(6,2)
+  sportsActivity   Decimal  @default(0) @db.Decimal(6,2) // 文体活动奖励（实践+校园文化+期刊）
+  sportsActivityTotal Decimal @default(0) @db.Decimal(6,2) // 校园文化活动总分（导出列 AB：活动奖励小计）
+  sportsTotal      Decimal  @default(0) @db.Decimal(6,2)
+  totalScore       Decimal  @default(0) @db.Decimal(6,2)
+  rankGrade        Int?
+  rankClass        Int?
+  breakdown        Json     @default("[]")
+  courseSummary    Json     @default("{}") // 课程数/Σ学分/加权均分/体育课成绩
+  flags            Json     @default("[]")
+  status           String   @default("CANDIDATE") @db.VarChar(16)
+  engineVersion    String   @default("1.0.0") @db.VarChar(16)
+  createdAt        DateTime @default(now())
+  batch    Batch   @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  student  Student @relation(fields: [studentId], references: [id])
+
+  @@unique([batchId, studentId, version])
+  @@index([batchId, version, totalScore])
+  @@index([batchId, status])
+}
+
+model PublishSnapshot {
+  id             String   @id @default(cuid())
+  batchId        String
+  calcVersion    Int
+  round          Int
+  publishedAt    DateTime
+  publicityStart DateTime
+  publicityEnd   DateTime
+  status         String   @default("ACTIVE") @db.VarChar(32)
+  statsJson      Json?
+  publishedBy    String?
+  batch Batch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+
+  objections Objection[]
+
+  @@unique([batchId, round])
+}
+
+model Objection {
+  id            String   @id @default(cuid())
+  batchId       String
+  studentId     String
+  snapshotId    String
+  targetApplicationId String?
+  content       String   @db.Text
+  status        String   @default("SUBMITTED") @db.VarChar(16)
+  handlerId     String?
+  handledAt     DateTime?
+  handleNote    String?  @db.VarChar(1000)
+  createdAt     DateTime @default(now())
+  batch    Batch        @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  student  Student      @relation(fields: [studentId], references: [id])
+  snapshot PublishSnapshot @relation(fields: [snapshotId], references: [id])
+  targetApplication Application? @relation(fields: [targetApplicationId], references: [id])
+
+  @@index([snapshotId, status])
+  @@index([batchId, studentId])
+}
+
+// ============ 文件 ============
+
+model FileObject {
+  id           String   @id @default(cuid())
+  uuid         String   @unique @db.VarChar(36)
+  originalName String   @db.VarChar(255)
+  ext          String   @db.VarChar(16)
+  mimeType     String   @default("application/octet-stream") @db.VarChar(128)
+  size         Int
+  sha256       String   @db.VarChar(64)
+  storedPath   String   @db.VarChar(512) // 相对 UPLOAD_DIR 的随机路径
+  kind         String   @default("FILE") @db.VarChar(16) // FILE / ZIP / EXPORT
+  parentZipId  String?  @db.VarChar(36)
+  innerPath    String?  @db.VarChar(512)
+  uploaderId   String?
+  createdAt    DateTime @default(now())
+
+  zipEntries    ZipEntry[]
+  attachments   ApplicationAttachment[]
+
+  @@index([parentZipId])
+  @@index([sha256])
+}
+
+model ZipEntry {
+  id          String  @id @default(cuid())
+  zipFileId   String
+  entryPath   String  @db.VarChar(512)
+  isDir       Boolean @default(false)
+  size        Int     @default(0)
+  compressedSize Int  @default(0)
+  extractedFileId String? @db.VarChar(32)
+  status      String  @default("OK") @db.VarChar(16)
+  zipFile     FileObject @relation(fields: [zipFileId], references: [id], onDelete: Cascade)
+
+  @@unique([zipFileId, entryPath])
+  @@index([zipFileId])
+}
+
+// ============ 令牌 / 审计 / 通知 ============
+
+model RefreshToken {
+  id           String    @id @default(cuid())
+  userId       String
+  tokenHash    String    @unique @db.VarChar(64)
+  familyId     String    @db.VarChar(36)
+  expiresAt    DateTime
+  revokedAt    DateTime?
+  replacedById String?   @db.VarChar(32)
+  ip           String    @default("") @db.VarChar(64)
+  ua           String    @default("") @db.VarChar(255)
+  createdAt    DateTime  @default(now())
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([familyId])
+}
+
+model AuditLog {
+  id           String   @id @default(cuid())
+  operatorId   String?
+  operatorName String   @default("") @db.VarChar(64)
+  action       String   @db.VarChar(32) // LOGIN/LOGIN_FAIL/IMPORT/REVIEW/PUBLISH/RULE_UPDATE/EXPORT/OBJECTION/GRADE_RESOLVE/USER_UPDATE
+  resourceType String?  @db.VarChar(32)
+  resourceId   String?  @db.VarChar(64)
+  detail       Json?
+  ip           String   @default("") @db.VarChar(64)
+  ua           String   @default("") @db.VarChar(255)
+  createdAt    DateTime @default(now())
+
+  @@index([operatorId, createdAt])
+  @@index([action, createdAt])
+  @@index([resourceType, resourceId])
+}
+
+model Announcement {
+  id        String   @id @default(cuid())
+  batchId   String?
+  title     String   @db.VarChar(255)
+  content   String   @db.Text
+  pinned    Boolean  @default(false)
+  createdBy String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([batchId, createdAt])
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  title     String   @db.VarChar(255)
+  content   String   @default("") @db.VarChar(1000)
+  link      String?  @db.VarChar(255)
+  readAt    DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([userId, readAt])
+}

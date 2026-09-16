@@ -1,0 +1,77 @@
+name: zongce
+
+services:
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root_ChangeMe2026}
+      MYSQL_DATABASE: zongce
+      MYSQL_USER: zc
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-ChangeMe_Zc2026}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --default-time-zone=+08:00
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p$$MYSQL_ROOT_PASSWORD"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    # 如需外部直连再暴露端口
+    # ports: ["3306:3306"]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "512mb", "--maxmemory-policy", "volatile-ttl"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: .
+      dockerfile: apps/backend/Dockerfile
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: mysql://zc:${MYSQL_PASSWORD:-ChangeMe_Zc2026}@mysql:3306/zongce?charset=utf8mb4
+      REDIS_URL: redis://redis:6379/0
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-ChangeMe_9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c}
+      AES_KEY_HEX: ${AES_KEY_HEX:-00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff}
+      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-Admin@Zc2026}
+      UPLOAD_DIR: /app/uploads
+    volumes:
+      - uploads:/app/uploads
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # 前端容器（React SPA + nginx 反代）。前端落地前不参与默认启停：
+  # docker compose up -d                      → 只起 mysql/redis/backend
+  # docker compose --profile frontend up -d   → 前端就绪后一并启动
+  frontend:
+    profiles: ["frontend"]
+    build:
+      context: .
+      dockerfile: apps/frontend/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-8080}:80"
+    depends_on:
+      - backend
+
+volumes:
+  mysql-data:
+  redis-data:
+  uploads:

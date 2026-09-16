@@ -1,0 +1,20 @@
+{
+  "name": "zongce-platform",
+  "private": true,
+  "version": "1.0.0",
+  "description": "大连外国语大学软件学院综合素质测评计算平台",
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev --parallel",
+    "test": "turbo run test",
+    "lint": "turbo run lint",
+    "db:generate": "pnpm --filter @zc/backend db:generate",
+    "db:push": "pnpm --filter @zc/backend db:push",
+    "db:seed": "pnpm --filter @zc/backend db:seed",
+    "db:local": "pnpm --filter @zc/backend db:local"
+  },
+  "devDependencies": {
+    "turbo": "^2.3.3"
+  },
+  "packageManager": "pnpm@11.23.0"
+}

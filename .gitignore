@@ -1,0 +1,14 @@
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+.env
+.env.local
+*.db
+*.db-journal
+apps/backend/prisma/sqlite.schema.prisma
+apps/backend/uploads/
+apps/backend/tmp/
+coverage/
+.DS_Store
+*.log
