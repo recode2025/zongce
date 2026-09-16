@@ -1,5 +1,6 @@
 # ---------- 构建阶段：workspace 全量安装后仅构建 frontend ----------
-FROM node:20-alpine AS build
+# Node 22：pnpm@11 依赖 node:sqlite 内置模块（Node 22.5+），Node 20 下无法启动
+FROM node:22-alpine AS build
 WORKDIR /app
 # 国内网络：依赖与 pnpm 本体均从 npmmirror 安装。
 # 不用 corepack：其从镜像源拉 pnpm 时会做官方签名校验，镜像无签名导致秒失败。
