@@ -1,5 +1,12 @@
 packages:
   - "apps/*"
   - "packages/*"
+# strictDepBuilds 默认开启：构建脚本未被审批的依赖会令 install 直接失败（ERR_PNPM_IGNORED_BUILDS）。
+# argon2 必须跑 install 脚本才能链接原生二进制；prisma 三件套的 postinstall 在
+# Dockerfile 只 COPY package.json 的阶段无 schema，是 no-op，真正的 generate 走 build:image。
 allowBuilds:
   esbuild: true
+  argon2: true
+  prisma: true
+  "@prisma/client": true
+  "@prisma/engines": true
