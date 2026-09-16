@@ -1,11 +1,14 @@
 # ---------- 构建阶段：workspace 全量安装后仅构建 frontend ----------
 FROM node:20-alpine AS build
 WORKDIR /app
-RUN corepack enable
+# 国内网络：npm 与 corepack 下载 pnpm 本体均走 npmmirror（淘宝镜像）
+ENV npm_config_registry=https://registry.npmmirror.com \
+    COREPACK_NPM_REGISTRY=https://registry.npmmirror.com
+RUN npm i -g corepack@latest && corepack enable
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json turbo.json ./
 COPY packages/shared/package.json packages/shared/
 COPY apps/frontend/package.json apps/frontend/
-RUN pnpm install --frozen-lockfile
+RUN pnpm install --frozen-lockfile=false
 COPY packages/shared packages/shared
 COPY apps/frontend apps/frontend
 RUN pnpm --filter @zc/frontend build

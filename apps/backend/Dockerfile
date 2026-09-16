@@ -1,10 +1,14 @@
 # ---- build ----
 FROM node:20-slim AS build
 WORKDIR /repo
+# 国内网络：npm 与 corepack 下载 pnpm 本体均走 npmmirror（淘宝镜像）
+ENV npm_config_registry=https://registry.npmmirror.com \
+    COREPACK_NPM_REGISTRY=https://registry.npmmirror.com
+RUN npm i -g corepack@latest && corepack enable
 COPY pnpm-workspace.yaml package.json ./
 COPY packages/shared/package.json packages/shared/
 COPY apps/backend/package.json apps/backend/
-RUN corepack enable && pnpm install --frozen-lockfile=false --filter @zc/backend... --filter @zc/shared...
+RUN pnpm install --frozen-lockfile=false --filter @zc/backend... --filter @zc/shared...
 COPY packages/shared packages/shared
 COPY apps/backend apps/backend
 RUN pnpm --filter @zc/shared build && pnpm --filter @zc/backend build
