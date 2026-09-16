@@ -1,10 +1,11 @@
 # ---- build ----
 FROM node:20-slim AS build
 WORKDIR /repo
-# 国内网络：npm 与 corepack 下载 pnpm 本体均走 npmmirror（淘宝镜像）
-ENV npm_config_registry=https://registry.npmmirror.com \
-    COREPACK_NPM_REGISTRY=https://registry.npmmirror.com
-RUN npm i -g corepack@latest && corepack enable
+# 国内网络：依赖与 pnpm 本体均从 npmmirror 安装。
+# 不用 corepack：其从镜像源拉 pnpm 时会做官方签名校验，镜像无签名导致秒失败。
+# 注意：版本与根 package.json 的 packageManager 字段保持一致
+ENV npm_config_registry=https://registry.npmmirror.com
+RUN npm i -g pnpm@11.23.0
 COPY pnpm-workspace.yaml package.json ./
 COPY packages/shared/package.json packages/shared/
 COPY apps/backend/package.json apps/backend/
