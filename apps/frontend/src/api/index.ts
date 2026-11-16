@@ -16,6 +16,7 @@ export interface Batch {
 export const fetchBatches = () => get<Batch[]>('/batches');
 export const fetchActiveBatch = () => get<Batch | null>('/batches/active');
 export const createBatch = (data: { semesterKey: string; name: string }) => post('/batches', data);
+export const deleteBatch = (id: string) => http.delete(`/batches/${encodeURIComponent(id)}`).then((r) => r.data as { success: boolean });
 export const transitionBatch = (id: string, to: string) => post(`/batches/${id}/transition`, { to });
 export const activateRulesSnapshot = (id: string) => post<{ count: number }>(`/batches/${id}/activate-rules`);
 

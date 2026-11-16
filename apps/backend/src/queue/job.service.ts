@@ -1,4 +1,4 @@
-import { ConflictException, Global, Injectable, Logger, Module, OnModuleInit } from '@nestjs/common';
+import { BadRequestException, ConflictException, Global, Injectable, Logger, Module, OnModuleInit } from '@nestjs/common';
 import { TASK_FAILED_MESSAGE } from '@zc/shared';
 import { PrismaService } from '../prisma/prisma.module';
 import { publicExceptionMessage } from '../common/utils/public-error';
@@ -40,21 +40,27 @@ export class JobService implements OnModuleInit {
     payload?: Record<string, unknown>;
     handler: (ctx: JobContext) => Promise<unknown>;
   }): Promise<string> {
-    const running = await this.prisma.importJob.findFirst({
-      where: { kind: opts.kind, batchId: opts.batchId ?? null, status: 'RUNNING' },
-    });
-    if (running) {
-      throw new ConflictException('同类型任务正在执行中，请稍候');
-    }
-    const job = await this.prisma.importJob.create({
-      data: {
-        kind: opts.kind,
-        batchId: opts.batchId,
-        fileName: opts.fileName ?? '',
-        operatorId: opts.operatorId,
-        payload: (opts.payload ?? {}) as object,
-        status: 'RUNNING',
-      },
+    const createJob = async (db: Pick<PrismaService, 'importJob'>) => {
+      const running = await db.importJob.findFirst({
+        where: { kind: opts.kind, batchId: opts.batchId ?? null, status: 'RUNNING' },
+      });
+      if (running) throw new ConflictException('同类型任务正在执行中，请稍候');
+      return db.importJob.create({
+        data: {
+          kind: opts.kind,
+          batchId: opts.batchId,
+          fileName: opts.fileName ?? '',
+          operatorId: opts.operatorId,
+          payload: (opts.payload ?? {}) as object,
+          status: 'RUNNING',
+        },
+      });
+    };
+    const job = opts.batchId == null ? await createJob(this.prisma) : await this.prisma.$transaction(async (tx) => {
+      // ImportJob.batchId 没有外键：先锁住父批次，和批次删除互斥。
+      const locked = await tx.batch.updateMany({ where: { id: opts.batchId }, data: { currentCalcVersion: { increment: 0 } } });
+      if (!locked.count) throw new BadRequestException('批次不存在');
+      return createJob(tx);
     });
     const ctx: JobContext = {
       jobId: job.id,

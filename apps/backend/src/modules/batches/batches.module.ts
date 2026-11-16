@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Get, Module, Param, Post, Put, Query } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Module, Param, Post, Put, Query } from '@nestjs/common';
 import { IsArray, IsBoolean, IsIn, IsOptional, IsString } from 'class-validator';
 import { BATCH_STATUS_FLOW, BatchStatus, Role } from '@zc/shared';
 import { PrismaService } from '../../prisma/prisma.module';
@@ -105,6 +105,50 @@ export class BatchesController {
     });
     await this.audit.log({ operatorId, action: 'BATCH_CREATE', resourceType: 'batch', resourceId: batch.id, detail: { semesterKey: dto.semesterKey }, ip });
     return batch;
+  }
+
+  /** 删除未发生学生提交或发布的草稿批次。 */
+  @Delete(':id')
+  @Roles(Role.SUPER_ADMIN)
+  async remove(@Param('id') id: string, @CurrentUser('id') operatorId: string, @ClientIp() ip: string) {
+    const deleted = await this.prisma.$transaction(async (tx) => {
+      // UPDATE 持有父记录行锁直到事务结束；外键关联的新增记录会等待该锁。
+      const locked = await tx.batch.updateMany({ where: { id, status: BatchStatus.DRAFT }, data: { status: BatchStatus.DRAFT } });
+      if (locked.count !== 1) {
+        const exists = await tx.batch.findUnique({ where: { id }, select: { id: true } });
+        throw new BadRequestException(exists ? '只有草稿批次可以删除' : '批次不存在');
+      }
+      const batch = await tx.batch.findUnique({ where: { id }, select: { name: true, semesterKey: true } });
+      if (!batch) throw new BadRequestException('批次不存在');
+      const [applications, packages, activeJobs, snapshots, objections, published] = await Promise.all([
+        tx.application.count({ where: { batchId: id, OR: [{ status: { not: 'DRAFT' } }, { reviewLogs: { some: {} } }] } }),
+        tx.materialPackage.count({ where: { batchId: id, OR: [
+          { status: { not: 'NOT_SUBMITTED' } }, { submittedAt: { not: null } },
+          { firstReviewedAt: { not: null } }, { firstReviewerId: { not: null } },
+        ] } }),
+        tx.importJob.count({ where: { batchId: id, status: { notIn: ['DONE', 'FAILED'] } } }),
+        tx.publishSnapshot.count({ where: { batchId: id } }),
+        tx.objection.count({ where: { batchId: id } }),
+        tx.calcResult.count({ where: { batchId: id, status: 'PUBLISHED' } }),
+      ]);
+      if (applications || packages) throw new BadRequestException('批次存在已提交或曾提交的申请、材料，不能删除');
+      if (activeJobs) throw new BadRequestException('批次有未结束的任务，不能删除');
+      if (snapshots || objections || published) throw new BadRequestException('批次存在公示、异议或已发布成绩，不能删除');
+
+      // 无外键的任务和公告仅清除此批次记录；文件对象本身不删除。
+      await tx.importJob.deleteMany({ where: { batchId: id } });
+      await tx.announcement.deleteMany({ where: { batchId: id } });
+      await tx.application.deleteMany({ where: { batchId: id } });
+      await tx.materialPackage.deleteMany({ where: { batchId: id } });
+      // 成绩异常可能引用课程成绩，先删除异常以免外键限制级联顺序。
+      await tx.gradeIssue.deleteMany({ where: { batchId: id } });
+      // 规则、课程成绩和未发布结果随批次级联删除。
+      await tx.batch.delete({ where: { id } });
+      return batch;
+    }, { isolationLevel: 'Serializable' });
+    await this.audit.log({ operatorId, action: 'BATCH_DELETE', resourceType: 'batch', resourceId: id,
+      detail: { semesterKey: deleted.semesterKey, name: deleted.name }, ip });
+    return { success: true };
   }
 
   /** 激活规则快照：把当前 RuleItem 字典复制为本批次 BatchRule */

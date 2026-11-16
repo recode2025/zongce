@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { App, Button, Card, Form, Input, Modal, Popconfirm, Space, Table, Tag, Typography } from 'antd';
-import { PlusOutlined, ReloadOutlined, ThunderboltOutlined } from '@ant-design/icons';
+import { DeleteOutlined, PlusOutlined, ReloadOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { BATCH_STATUS_FLOW, BATCH_STATUS_LABEL } from '@zc/shared';
-import { activateRulesSnapshot, createBatch, fetchBatches, transitionBatch } from '../../api';
+import { activateRulesSnapshot, createBatch, deleteBatch, fetchBatches, transitionBatch } from '../../api';
 import { errMsg } from '../../api/client';
 import { BatchStatusTag, fmtTime } from '../../components/common';
 import { useAuth } from '../../store/auth';
@@ -38,6 +38,24 @@ export default function Batches() {
         try {
           await transitionBatch(row.id, to);
           message.success(`已进入「${BATCH_STATUS_LABEL[to as keyof typeof BATCH_STATUS_LABEL]}」`);
+          load();
+        } catch (e) {
+          message.error(errMsg(e));
+        }
+      },
+    });
+
+  const doDelete = (row: any) =>
+    modal.confirm({
+      title: '删除草稿批次',
+      content: `确定删除「${row.name}」（${row.semesterKey}）？未提交的学生草稿、已导入成绩、规则快照、关联公告和已结束任务记录等将一并删除，且无法恢复。已提交过申请或存在运行中任务的批次不能删除。`,
+      okText: '删除',
+      cancelText: '取消',
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        try {
+          await deleteBatch(row.id);
+          message.success('草稿批次已删除');
           load();
         } catch (e) {
           message.error(errMsg(e));
@@ -117,6 +135,11 @@ export default function Batches() {
                       </Button>
                     )}
                     {!next && <Typography.Text type="secondary">已归档</Typography.Text>}
+                    {r.status === 'DRAFT' && (
+                      <Button size="small" danger icon={<DeleteOutlined />} onClick={() => doDelete(r)}>
+                        删除
+                      </Button>
+                    )}
                   </Space>
                 );
               },

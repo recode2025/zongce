@@ -48,8 +48,13 @@ export class NotifyController {
   @Roles(Role.SUPER_ADMIN)
   async createAnnouncement(@Body() dto: AnnouncementDto, @CurrentUser('id') userId: string) {
     if (dto.title.trim().length === 0 || dto.content.trim().length === 0) throw new BadRequestException('标题和内容不能为空');
-    return this.prisma.announcement.create({
-      data: { title: dto.title.slice(0, 255), content: dto.content.slice(0, 10000), batchId: dto.batchId, pinned: dto.pinned ?? false, createdBy: userId },
+    const data = { title: dto.title.slice(0, 255), content: dto.content.slice(0, 10000), batchId: dto.batchId, pinned: dto.pinned ?? false, createdBy: userId };
+    if (dto.batchId == null) return this.prisma.announcement.create({ data });
+    return this.prisma.$transaction(async (tx) => {
+      // Announcement.batchId 没有外键：先锁住父批次，和批次删除互斥。
+      const locked = await tx.batch.updateMany({ where: { id: dto.batchId }, data: { currentCalcVersion: { increment: 0 } } });
+      if (!locked.count) throw new BadRequestException('批次不存在');
+      return tx.announcement.create({ data });
     });
   }
 

@@ -17,7 +17,7 @@ const context = (controller: any, method: string, role: Role) => ({
 
 describe('全局操作和批次统计权限', () => {
   test.each([
-    [BatchesController, 'create'], [BatchesController, 'activateRules'], [BatchesController, 'transition'],
+    [BatchesController, 'create'], [BatchesController, 'remove'], [BatchesController, 'activateRules'], [BatchesController, 'transition'],
     [BatchesController, 'setApplySwitch'], [NotifyController, 'createAnnouncement'], [NotifyController, 'deleteAnnouncement'],
     [AuthController, 'getPassphrase'], [AuthController, 'updatePassphrase'],
   ])('%s.%s 仅允许超管', (controller, method) => {
