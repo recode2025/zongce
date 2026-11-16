@@ -90,6 +90,10 @@ export class ExportsController {
       orderBy: [{ student: { className: 'asc' } }, { rankClass: 'asc' }],
     });
     if (!rows.length) throw new BadRequestException('无匹配的计算结果');
+    // 历史汇总没有完整的课程和申请明细，常规模板会把缺失细项填成零或虚构计算依据。
+    if (rows.some((row) => row.engineVersion === 'HISTORICAL')) {
+      throw new BadRequestException('历史导入成绩暂不支持此计算结果模板导出，请使用原始综测总表');
+    }
     if (!dto.version) version = rows.reduce((m, r) => Math.max(m, r.version), 0) || version; // 标注实际覆盖的最高版本
 
     // 班级名单（CLASS 单班）

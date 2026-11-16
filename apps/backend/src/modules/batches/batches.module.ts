@@ -48,16 +48,26 @@ export class BatchesController {
         ...(!scoped ? { snapshots: true } : {}),
       } } },
     });
+    const historical = items.length ? await this.prisma.calcResult.findMany({
+      where: { batchId: { in: items.map((batch) => batch.id) }, engineVersion: 'HISTORICAL' },
+      select: { batchId: true },
+      distinct: ['batchId'],
+    }) : [];
+    const historicalIds = new Set(historical.map((row) => row.batchId));
     return items.map((b) => ({
       ...b,
       counts: b._count,
+      historicalImport: historicalIds.has(b.id),
     }));
   }
 
   /** 当前进行中的批次（学生端首页用；附提交通道开关状态） */
   @Get('active')
   async active(@CurrentUser('grade') grade: number | null) {
-    const list = await this.prisma.batch.findMany({ where: { status: { not: 'ARCHIVED' } }, orderBy: { createdAt: 'desc' } });
+    const list = await this.prisma.batch.findMany({
+      where: { status: { not: 'ARCHIVED' }, calcResults: { none: { engineVersion: 'HISTORICAL' } } },
+      orderBy: { createdAt: 'desc' },
+    });
     if (!list.length) return null;
     const row = await this.prisma.sysConfig.findUnique({ where: { key: APPLY_SWITCH_KEY } });
     return { ...list[0], applyEnabled: row?.value !== 'false' };

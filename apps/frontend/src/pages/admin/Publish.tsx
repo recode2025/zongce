@@ -208,9 +208,13 @@ function ReleaseTab({
   const nav = useNavigate();
   const [days, setDays] = useState<number | 'custom'>(3);
   const [endAt, setEndAt] = useState<Dayjs>(() => endAfterDays(3));
-  const [hideTop, setHideTop] = useState(true);
+  const [hideTop, setHideTop] = useState(() => !batch.historicalImport);
   const [hideN, setHideN] = useState(30);
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    setHideTop(!batch.historicalImport);
+  }, [batch.id, batch.historicalImport]);
 
   const canRelease = [BatchStatus.CALCULATED, BatchStatus.PUBLICITY].includes(batch.status as BatchStatus);
   const archived = batch.status === BatchStatus.ARCHIVED;
@@ -315,7 +319,7 @@ function ReleaseTab({
                   <InputNumber min={1} max={200} value={hideN} onChange={(v) => setHideN(v ?? 30)} disabled={!hideTop} style={{ width: 80 }} />
                   <span>名的排名</span>
                 </Space>
-                <span className="zc-pb-hint">只影响学生端本轮显示，总分照常可见；第二轮起自动恢复</span>
+                <span className="zc-pb-hint">{batch.historicalImport ? '历史批次默认显示原年级排名，可按需手动隐藏。' : '只影响学生端本轮显示，总分照常可见；第二轮起自动恢复'}</span>
               </div>
             </div>
           )}

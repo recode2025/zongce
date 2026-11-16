@@ -3,7 +3,7 @@ import { Alert, App, Button, Card, Drawer, Empty, Input, Modal, Select, Space, T
 import { ExperimentOutlined, FileExcelOutlined, ReloadOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { ClassInfo, createExport, downloadFile, fetchCalcDetail, fetchCalcResults, fetchCalcVersions, fetchClasses, runCalc } from '../../api';
 import { errMsg } from '../../api/client';
-import { BatchSelect, FlagTag, fmtTime } from '../../components/common';
+import { BatchSelect, FlagTag, fmtTime, useBatches } from '../../components/common';
 import JobProgress from '../../components/JobProgress';
 import ScoreBreakdown from '../../components/ScoreBreakdown';
 import { useAuth } from '../../store/auth';
@@ -12,6 +12,7 @@ import { useAuth } from '../../store/auth';
 export default function Calc() {
   const { message, modal } = App.useApp();
   const canCalculate = useAuth().user?.role === 'SUPER_ADMIN';
+  const batches = useBatches();
   const [batchId, setBatchId] = useState('');
   const [classes, setClasses] = useState<ClassInfo[]>([]);
   const [versions, setVersions] = useState<any[]>([]);
@@ -24,6 +25,8 @@ export default function Calc() {
   const [loading, setLoading] = useState(false);
   const [job, setJob] = useState<{ jobId: string; kind: 'DRY' | 'RUN' | 'EXPORT' } | null>(null);
   const [detail, setDetail] = useState<any>(null);
+  const selectedBatch = batches.find((batch) => batch.id === batchId);
+  const isHistorical = !!selectedBatch?.historicalImport;
 
   useEffect(() => {
     fetchClasses().then(setClasses).catch(() => undefined);
@@ -53,8 +56,9 @@ export default function Calc() {
   useEffect(loadVersions, [loadVersions]);
   useEffect(load, [load]);
 
-  const doRun = (dryRun: boolean) =>
-    modal.confirm({
+  const doRun = (dryRun: boolean) => {
+    if (!selectedBatch || selectedBatch.historicalImport) return;
+    return modal.confirm({
       title: dryRun ? '试算（不落版）' : '正式计算',
       content: dryRun
         ? '试算仅生成差异报告与逐生结果预览，不产生新版本，不影响已发布成绩。'
@@ -68,6 +72,7 @@ export default function Calc() {
         }
       },
     });
+  };
 
   const doExportAcademic = async () => {
     try {
@@ -82,20 +87,21 @@ export default function Calc() {
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
       <Card size="small">
         <Space wrap>
-          <BatchSelect value={batchId} onChange={(v) => { setBatchId(v); setVersion(undefined); }} />
-          {canCalculate && <Button icon={<ExperimentOutlined />} disabled={!batchId} onClick={() => doRun(true)}>
+          <BatchSelect value={batchId} onChange={(v) => { setBatchId(v); setVersion(undefined); setVersions([]); setRows([]); setTotal(0); setPage(1); }} />
+          {canCalculate && <Button icon={<ExperimentOutlined />} disabled={!selectedBatch || isHistorical} onClick={() => doRun(true)}>
             试算（差异报告）
           </Button>}
-          {canCalculate && <Button type="primary" icon={<ThunderboltOutlined />} disabled={!batchId} onClick={() => doRun(false)}>
+          {canCalculate && <Button type="primary" icon={<ThunderboltOutlined />} disabled={!selectedBatch || isHistorical} onClick={() => doRun(false)}>
             正式计算
           </Button>}
-          <Button icon={<FileExcelOutlined />} disabled={!batchId} onClick={doExportAcademic}>
+          <Button icon={<FileExcelOutlined />} disabled={!selectedBatch || isHistorical} onClick={doExportAcademic}>
             导出学业分
           </Button>
           <Button icon={<ReloadOutlined />} onClick={() => { loadVersions(); load(); }}>
             刷新
           </Button>
         </Space>
+        {isHistorical && <Alert style={{ marginTop: 12 }} type="info" showIcon message="历史汇总不支持试算、重算或导出学业分；可查看原始总分并在发布页面发布。" />}
       </Card>
 
       {job && (
@@ -164,7 +170,7 @@ export default function Calc() {
           scroll={{ x: 'max-content' }}
           columns={[
             { title: '年级排名', dataIndex: 'rankGrade', width: 85, align: 'right', className: 'zc-num' },
-            { title: '班级排名', dataIndex: 'rankClass', width: 85, align: 'right', className: 'zc-num' },
+            { title: '班级排名', dataIndex: 'rankClass', width: 110, align: 'right', className: 'zc-num', render: (v) => v ?? '未提供' },
             { title: '班级', dataIndex: ['student', 'className'], width: 150, ellipsis: true },
             { title: '学号', dataIndex: ['student', 'studentNo'], width: 110 },
             { title: '姓名', dataIndex: ['student', 'name'], width: 80 },
@@ -213,14 +219,14 @@ export default function Calc() {
             <Card size="small">
               <Space size="large" wrap>
                 <Typography.Text className="zc-num">总分 <Typography.Text strong style={{ fontSize: 22 }}>{Number(detail.totalScore).toFixed(2)}</Typography.Text></Typography.Text>
-                <Typography.Text className="zc-num">年级第 {detail.rankGrade ?? '-'} · 班级第 {detail.rankClass ?? '-'}</Typography.Text>
+                <Typography.Text className="zc-num">{detail.rankGrade == null ? '年级排名未提供' : `年级第 ${detail.rankGrade}`} · {detail.rankClass == null ? '班级排名未提供' : `班级第 ${detail.rankClass}`}</Typography.Text>
                 <Tag>v{detail.version} · {detail.status}</Tag>
-                <Typography.Text type="secondary">引擎 {detail.engineVersion}</Typography.Text>
+                <Typography.Text type="secondary">{detail.courseSummary?.source === 'HISTORICAL_IMPORT' ? '来源：历史汇总' : `引擎 ${detail.engineVersion}`}</Typography.Text>
               </Space>
             </Card>
-            {!!detail.flags?.length && <Alert type="warning" showIcon message={<Space wrap>{(detail.flags as string[]).map((f: string) => <FlagTag key={f} flag={f} />)}</Space>} />}
+            {detail.courseSummary?.source !== 'HISTORICAL_IMPORT' && !!detail.flags?.length && <Alert type="warning" showIcon message={<Space wrap>{(detail.flags as string[]).map((f: string) => <FlagTag key={f} flag={f} />)}</Space>} />}
             <ScoreBreakdown breakdown={detail.breakdown} courseSummary={detail.courseSummary} />
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>计算于 {fmtTime(detail.createdAt)}</Typography.Text>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>{detail.courseSummary?.source === 'HISTORICAL_IMPORT' ? '导入于' : '计算于'} {fmtTime(detail.createdAt)}</Typography.Text>
           </Space>
         )}
       </Drawer>

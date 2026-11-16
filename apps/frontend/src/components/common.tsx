@@ -91,14 +91,23 @@ export const fmtTime = (t?: string | Date | null) => {
 // ---------- 批次选择（管理端各页共用） ----------
 
 let cachedBatches: Batch[] | null = null;
+let batchCacheGeneration = 0;
+
+/** 新建或导入批次后失效缓存，防止之后的选择器仍显示旧列表。 */
+export function invalidateBatchCache() {
+  cachedBatches = null;
+  batchCacheGeneration++;
+}
 
 export function useBatches() {
   const [batches, setBatches] = useState<Batch[]>(cachedBatches ?? []);
   useEffect(() => {
     if (cachedBatches) return;
     let alive = true;
+    const generation = batchCacheGeneration;
     fetchBatches()
       .then((list) => {
+        if (generation !== batchCacheGeneration) return;
         cachedBatches = list;
         if (alive) setBatches(list);
       })

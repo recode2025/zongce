@@ -6,6 +6,7 @@ build/
 .env.local
 *.db
 *.db-journal
+e2e-export-class.xlsx
 apps/backend/prisma/sqlite.schema.prisma
 apps/backend/uploads/
 apps/backend/tmp/

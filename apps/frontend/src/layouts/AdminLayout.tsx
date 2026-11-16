@@ -8,6 +8,7 @@ import {
   DownOutlined,
   ExportOutlined,
   FileProtectOutlined,
+  FileAddOutlined,
   FileSearchOutlined,
   KeyOutlined,
   LogoutOutlined,
@@ -31,6 +32,7 @@ interface NavItem {
   key: string;
   icon: React.ReactNode;
   label: string;
+  superOnly?: boolean;
 }
 
 /** 管理端菜单按学期工作流分组：数据准备 → 审核 → 计算发布 */
@@ -42,6 +44,7 @@ const ADMIN_NAV: { group: string; items: NavItem[] }[] = [
       { key: '/admin/batches', icon: <PartitionOutlined />, label: '批次管理' },
       { key: '/admin/students', icon: <TeamOutlined />, label: '学生与班级' },
       { key: '/admin/grades', icon: <ProfileOutlined />, label: '成绩导入与异常' },
+      { key: '/admin/historical-import', icon: <FileAddOutlined />, label: '历史数据导入', superOnly: true },
       { key: '/admin/rules', icon: <SafetyCertificateOutlined />, label: '规则字典' },
     ],
   },
@@ -57,7 +60,7 @@ const ADMIN_NAV: { group: string; items: NavItem[] }[] = [
     items: [
       { key: '/admin/calc', icon: <CalculatorOutlined />, label: '计算引擎' },
       { key: '/admin/publish', icon: <SoundOutlined />, label: '发布与公示' },
-      { key: '/admin/scholarship', icon: <TrophyOutlined />, label: '奖学金评定' },
+      { key: '/admin/scholarship', icon: <TrophyOutlined />, label: '奖学金记录' },
       { key: '/admin/export', icon: <ExportOutlined />, label: '导出中心' },
     ],
   },
@@ -76,7 +79,13 @@ export default function AdminLayout() {
   const loc = useLocation();
   const [pwdOpen, setPwdOpen] = useState(false);
 
-  const groups = user?.role === 'CLASS_LEADER' ? LEADER_NAV : ADMIN_NAV;
+  const groups = useMemo(() => {
+    if (user?.role === 'CLASS_LEADER') return LEADER_NAV;
+    return ADMIN_NAV.map((group) => ({
+      ...group,
+      items: group.items.filter((item) => !item.superOnly || user?.role === 'SUPER_ADMIN'),
+    }));
+  }, [user?.role]);
 
   const menuItems = useMemo<MenuProps['items']>(
     () =>

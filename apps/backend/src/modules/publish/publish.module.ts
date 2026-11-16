@@ -129,7 +129,8 @@ export class PublishController {
     const seen = new Set<string>();
     return rows
       .filter((r) => (seen.has(r.batchId) ? false : (seen.add(r.batchId), true)))
-      .sort((a, b) => b.batch.createdAt.getTime() - a.batch.createdAt.getTime())
+      // Historical batches may be imported years later; sort by actual semester.
+      .sort((a, b) => b.batch.semesterKey.localeCompare(a.batch.semesterKey) || b.batch.createdAt.getTime() - a.batch.createdAt.getTime())
       .map((r) => ({
         batchId: r.batchId,
         name: r.batch.name,
@@ -146,16 +147,19 @@ export class PublishController {
     await rateLimit(this.cache, { scope: 'score', id: user.id, limit: 10, windowSec: 60 }).catch(() => undefined);
     const student = await this.prisma.student.findUnique({ where: { userId: user.id } });
     if (!student) throw new BadRequestException('非学生账号');
-    const snapshot = await this.prisma.publishSnapshot.findFirst({
-      where: { batchId: batchId ?? undefined, status: 'ACTIVE' },
-      orderBy: { publishedAt: 'desc' },
-    });
-    if (!snapshot && !batchId) {
-      const any = await this.prisma.publishSnapshot.findFirst({ where: { status: 'ACTIVE' }, orderBy: { publishedAt: 'desc' } });
-      if (any) return this.readSnapshot(any.batchId, student);
-      throw new BadRequestException('成绩尚未发布');
+    if (batchId) {
+      // Preserve the existing explicit-batch fallback for archived snapshots.
+      return this.readSnapshot(batchId, student);
     }
-    return this.readSnapshot(snapshot ? snapshot.batchId : batchId!, student);
+    const snapshot = await this.prisma.publishSnapshot.findFirst({
+      where: {
+        status: 'ACTIVE',
+        batch: { calcResults: { some: { studentId: student.id, status: 'PUBLISHED' } } },
+      },
+      orderBy: [{ batch: { semesterKey: 'desc' } }, { publishedAt: 'desc' }],
+    });
+    if (!snapshot) throw new BadRequestException('成绩尚未发布');
+    return this.readSnapshot(snapshot.batchId, student);
   }
 
   /** 公示轮次列表 */

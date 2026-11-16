@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { Card, Descriptions, Empty, Space, Table, Tag, Typography } from 'antd';
+import { Alert, Card, Descriptions, Empty, Space, Table, Tag, Typography } from 'antd';
 import { FlagTag, fileSize } from './common';
 
 export interface BreakdownItem {
@@ -11,6 +11,7 @@ export interface BreakdownItem {
 }
 
 export interface CourseSummary {
+  source?: string;
   courseCount: number;
   totalCredit: number;
   weightedAvg: number | null;
@@ -41,6 +42,10 @@ export default function ScoreBreakdown({
   flags?: string[];
   flat?: boolean;
 }) {
+  if (courseSummary?.source === 'HISTORICAL_IMPORT') {
+    return <Alert type="info" showIcon message="历史汇总，课程和分项构成未导入" />;
+  }
+
   const section = (title: string, child: ReactNode) =>
     flat ? (
       <div className="zc-flat-sec">

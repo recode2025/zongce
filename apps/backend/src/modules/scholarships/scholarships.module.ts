@@ -87,16 +87,16 @@ export class ScholarshipsService {
 
     // ---- 每学期每生的综测总分（及引擎不及格扣分）----
     const semesters: SemesterMeta[] = [];
-    const scoreBy: Map<string, { total: number; failPenalty: number }>[] = [];
+    const scoreBy: Map<string, { total: number; failPenalty: number; historical: boolean }>[] = [];
     for (const key of keys) {
       const b = batches.find((x) => x.semesterKey === key);
-      const m = new Map<string, { total: number; failPenalty: number }>();
+      const m = new Map<string, { total: number; failPenalty: number; historical: boolean }>();
       let source: SemesterMeta['source'] = 'NONE';
       let version: number | null = null;
       if (b) {
         const published = await this.prisma.calcResult.findMany({
           where: { batchId: b.id, status: 'PUBLISHED', ...(q.grade != null ? { student: { grade: q.grade } } : {}) },
-          select: { studentId: true, version: true, totalScore: true, academicFailPenalty: true },
+          select: { studentId: true, version: true, totalScore: true, academicFailPenalty: true, engineVersion: true },
           orderBy: { version: 'desc' },
         });
         let rows = published;
@@ -106,7 +106,7 @@ export class ScholarshipsService {
         } else if (b.currentCalcVersion > 0) {
           rows = await this.prisma.calcResult.findMany({
             where: { batchId: b.id, version: b.currentCalcVersion, ...(q.grade != null ? { student: { grade: q.grade } } : {}) },
-            select: { studentId: true, version: true, totalScore: true, academicFailPenalty: true },
+            select: { studentId: true, version: true, totalScore: true, academicFailPenalty: true, engineVersion: true },
           });
           if (rows.length) {
             source = 'CALC';
@@ -114,7 +114,7 @@ export class ScholarshipsService {
           }
         }
         // orderBy version desc：同一学生多行（增量发布）时首行即最新
-        for (const r of rows) if (!m.has(r.studentId)) m.set(r.studentId, { total: Number(r.totalScore), failPenalty: Number(r.academicFailPenalty) });
+        for (const r of rows) if (!m.has(r.studentId)) m.set(r.studentId, { total: Number(r.totalScore), failPenalty: Number(r.academicFailPenalty), historical: r.engineVersion === 'HISTORICAL' });
       }
       semesters.push({ semesterKey: key, batchId: b?.id ?? null, batchName: b?.name ?? null, batchStatus: b?.status ?? null, source, version });
       scoreBy.push(m);
@@ -174,9 +174,10 @@ export class ScholarshipsService {
       const terms = t.map((x) => (x ? round2(x.total) : null));
       const sum = terms[0] != null && terms[1] != null ? round2(terms[0] + terms[1]) : null;
       const fails = failsBy.get(s.id) ?? [];
-      const hasFail = failRule === 'ENGINE' ? t.some((x) => x && x.failPenalty > 0) : fails.length > 0;
+      const hasFail = failRule === 'ENGINE' ? t.some((x) => x && !x.historical && x.failPenalty > 0) : fails.length > 0;
       const missing = terms.map((v, i) => (v == null ? (i === 0 ? '第一学期' : '第二学期') : null)).filter(Boolean);
-      const reason = missing.length ? `缺少${missing.join('、')}综测成绩` : hasFail ? '有挂科' : null;
+      // 历史汇总表不等同于完整课程成绩，不能把缺失记录当作无挂科。
+      const reason = missing.length ? `缺少${missing.join('、')}综测成绩` : hasFail ? '有挂科' : t.some((x) => x?.historical) ? '历史汇总成绩，课程资格待核验' : null;
       const a = awardBy.get(s.id);
       return {
         studentId: s.id,

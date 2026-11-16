@@ -71,6 +71,7 @@ model Student {
   issues       GradeIssue[]
   objections   Objection[]
   scholarshipAwards ScholarshipAward[]
+  historicalScholarshipRecords HistoricalScholarshipRecord[]
 
   @@index([grade, classId])
   @@index([enrollStatus])
@@ -504,4 +505,42 @@ model ScholarshipAward {
 
   @@unique([academicYear, studentId])
   @@index([academicYear, award])
+}
+
+/// 同一学年只允许一个原始历史奖学金文件，防止不同版本的名单被叠加。
+model HistoricalScholarshipImport {
+  id             String   @id @default(cuid())
+  academicYear   String   @unique @db.VarChar(16)
+  fileHash       String   @db.VarChar(64)
+  sourceFileName String   @db.VarChar(255)
+  operatorId     String?  @db.VarChar(191)
+  createdAt      DateTime @default(now())
+  records        HistoricalScholarshipRecord[]
+}
+
+/// 历史奖学金原始记录；不改变当前学年的正式奖项，特色名单须人工核实。
+model HistoricalScholarshipRecord {
+  id               String   @id @default(cuid())
+  importId         String
+  academicYear     String   @db.VarChar(16)
+  studentId        String
+  studentNo        String   @db.VarChar(32)
+  sourceName       String   @db.VarChar(64)
+  rawAward         String?  @db.VarChar(128)
+  projectName      String?  @db.VarChar(128)
+  note             String?  @db.Text
+  isPending        Boolean  @default(false)
+  sourceSheet      String   @db.VarChar(128)
+  sourceRow        Int
+  sourceFileName   String   @db.VarChar(255)
+  fileHash         String   @db.VarChar(64)
+  sourceRecordHash String   @unique @db.VarChar(64)
+  operatorId       String?  @db.VarChar(191)
+  createdAt        DateTime @default(now())
+  student          Student  @relation(fields: [studentId], references: [id], onDelete: Restrict)
+  import           HistoricalScholarshipImport @relation(fields: [importId], references: [id], onDelete: Restrict)
+
+  @@index([academicYear, studentId])
+  @@index([academicYear, isPending])
+  @@index([importId])
 }

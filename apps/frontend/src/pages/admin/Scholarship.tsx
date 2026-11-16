@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { App, Button, Card, Empty, Input, Modal, Segmented, Select, Space, Table, Tag, Tooltip, Typography } from 'antd';
+import { Alert, App, Button, Card, Collapse, Empty, Input, Modal, Segmented, Select, Space, Table, Tag, Tooltip, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { DownloadOutlined, EditOutlined, InfoCircleOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
 import { SCHOLARSHIP_AWARD_LABEL, SCHOLARSHIP_AWARD_ORDER, ScholarshipAward } from '@zc/shared';
@@ -12,6 +12,9 @@ import {
   setScholarshipAward,
 } from '../../api';
 import { errMsg } from '../../api/client';
+import { fetchHistoricalScholarshipSummary, HistoricalScholarshipSummaryRow } from '../../api/historical-import';
+import { useAuth } from '../../store/auth';
+import { useNavigate } from 'react-router-dom';
 
 type FailRule = 'STRICT' | 'ENGINE';
 
@@ -31,7 +34,7 @@ const fmt = (v: number | null) => (v == null ? '—' : v.toFixed(2));
 const termLabel = (k: string) => (k.endsWith('-1') ? '第一学期' : '第二学期');
 
 /** 奖学金评定：两学期综测总和排名（无挂科者参与），管理员手动设定奖项 */
-export default function Scholarship() {
+function ScholarshipAssessment() {
   const { message, modal } = App.useApp();
   const [years, setYears] = useState<string[]>([]);
   const [year, setYear] = useState('');
@@ -343,6 +346,76 @@ export default function Scholarship() {
       >
         <Input.TextArea rows={3} value={noteText} onChange={(e) => setNoteText(e.target.value)} maxLength={255} showCount placeholder="如：评审会议纪要编号、调剂说明" />
       </Modal>
+    </Space>
+  );
+}
+
+/** 历史奖学金仅展示来源表中的原始奖项和特色项目，不推算资格或发放状态。 */
+export default function Scholarship() {
+  const { message } = App.useApp();
+  const { user } = useAuth();
+  const navigate = useNavigate();
+  const canViewHistory = user?.role === 'SUPER_ADMIN';
+  const [year, setYear] = useState('');
+  const [queryYear, setQueryYear] = useState('');
+  const [rows, setRows] = useState<HistoricalScholarshipSummaryRow[] | null>(null);
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(false);
+
+  const load = async (selectedYear: string, selectedPage = 1) => {
+    if (!/^\d{4}-\d{4}$/.test(selectedYear)) {
+      message.warning('请输入学年，例如 2025-2026');
+      return;
+    }
+    setLoading(true);
+    try {
+      const data = await fetchHistoricalScholarshipSummary(selectedYear, selectedPage);
+      setRows(data.items);
+      setPage(data.page);
+      setTotal(data.total);
+      setQueryYear(selectedYear);
+    } catch (e) {
+      message.error(errMsg(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+      <Alert type="info" showIcon message="按学年查看历史奖学金名单"
+        description="原表中的奖项和特色项目名单分别保留。未记录表示当前导入材料中没有发现奖项，不代表已完成资格审核或奖金发放。" />
+      {canViewHistory ? <>
+        <Card size="small" title="历史获奖情况">
+          <Space wrap>
+            <label htmlFor="scholarship-history-year">学年</label>
+            <Input id="scholarship-history-year" placeholder="例如 2025-2026" value={year} disabled={loading}
+              onChange={(e) => { setYear(e.target.value.trim()); setRows(null); setQueryYear(''); }}
+              onPressEnter={() => load(year)} style={{ width: 170 }} />
+            <Button type="primary" loading={loading} onClick={() => load(year)}>查询</Button>
+            <Button onClick={() => navigate('/admin/historical-import')}>导入历史表</Button>
+          </Space>
+        </Card>
+        {rows && <Card size="small" title={`${queryYear} 奖学金记录`}>
+          <Table<HistoricalScholarshipSummaryRow>
+            size="small" rowKey="studentId" loading={loading} dataSource={rows} scroll={{ x: 'max-content' }}
+            pagination={{ current: page, total, pageSize: 50, showSizeChanger: false, onChange: (next) => load(queryYear, next), showTotal: (n) => `共 ${n} 人` }}
+            columns={[
+              { title: '学号', dataIndex: 'studentNo' },
+              { title: '姓名', dataIndex: 'name' },
+              { title: '获奖情况', dataIndex: 'hasAward', render: (v) => v ? <Tag color="green">有记录</Tag> : <Tag>未记录</Tag> },
+              { title: '原奖项', dataIndex: 'awards', render: (items: HistoricalScholarshipSummaryRow['awards']) => items.length
+                ? <Space wrap>{items.map((item) => <Tooltip key={item.name} title={item.sources.map((s) => `${s.sourceSheet} 第 ${s.sourceRow} 行`).join('；')}><Tag>{item.name}</Tag></Tooltip>)}</Space>
+                : '—' },
+              { title: '特色项目名单', dataIndex: 'projects', render: (items: HistoricalScholarshipSummaryRow['projects']) => items.length
+                ? <Space wrap>{items.map((item) => <Tooltip key={item.name} title={item.sources.map((s) => `${s.sourceSheet} 第 ${s.sourceRow} 行`).join('；')}><Tag color="blue">{item.name}</Tag></Tooltip>)}</Space>
+                : '—' },
+            ]}
+          />
+        </Card>}
+      </> : <Alert type="warning" showIcon message="历史奖学金名单仅超级管理员可查看" />}
+      <Collapse items={[{ key: 'assessment', label: '原评定工具（按需展开）', children: <ScholarshipAssessment /> }]} />
     </Space>
   );
 }

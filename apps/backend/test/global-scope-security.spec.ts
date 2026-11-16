@@ -30,12 +30,18 @@ describe('全局操作和批次统计权限', () => {
     [{ id: 'a', role: Role.GRADE_ADMIN, grade: 2025 }, { grade: 2025 }],
   ])('批次统计强制学生范围', async (user, scope) => {
     const findMany = jest.fn().mockResolvedValue([{ id: 'b', _count: { applications: 1 } }]);
-    const controller = new BatchesController({ batch: { findMany } } as any, {} as any);
+    const findHistorical = jest.fn().mockResolvedValue([{ batchId: 'b' }]);
+    const controller = new BatchesController({ batch: { findMany }, calcResult: { findMany: findHistorical } } as any, {} as any);
     const result = await controller.list(user as any);
     const select = findMany.mock.calls[0][0].include._count.select;
     for (const key of ['applications', 'courseGrades', 'calcResults', 'objections']) expect(select[key]).toEqual({ where: { student: scope } });
     expect(select.snapshots).toBeUndefined();
     expect(result[0].counts.applications).toBe(1);
+    expect(result[0].historicalImport).toBe(true);
+    expect(findHistorical).toHaveBeenCalledWith({
+      where: { batchId: { in: ['b'] }, engineVersion: 'HISTORICAL' },
+      select: { batchId: true }, distinct: ['batchId'],
+    });
   });
 
   test('未绑定年级的管理员不能查看批次统计', async () => {

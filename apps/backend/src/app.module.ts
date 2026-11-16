@@ -22,6 +22,8 @@ import { PublishModule } from './modules/publish/publish.module';
 import { ExportsModule } from './modules/exports/exports.module';
 import { StatsModule } from './modules/stats/stats.module';
 import { ScholarshipsModule } from './modules/scholarships/scholarships.module';
+import { HistoricalImportModule } from './modules/historical-import/historical-import.module';
+import { HistoricalScholarshipModule } from './modules/historical-scholarship/historical-scholarship.module';
 import { NotifyModule } from './modules/notify/notify.module';
 
 @Module({
@@ -49,6 +51,8 @@ import { NotifyModule } from './modules/notify/notify.module';
     ExportsModule,
     StatsModule,
     ScholarshipsModule,
+    HistoricalImportModule,
+    HistoricalScholarshipModule,
     NotifyModule,
   ],
   providers: [

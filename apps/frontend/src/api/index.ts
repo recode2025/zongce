@@ -9,6 +9,7 @@ export interface Batch {
   status: string;
   phases?: { phase: string; start?: string; end?: string }[];
   currentCalcVersion: number;
+  historicalImport?: boolean;
   createdAt: string;
   counts?: Record<string, number>;
 }

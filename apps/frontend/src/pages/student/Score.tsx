@@ -144,6 +144,7 @@ export default function MyScore() {
   }, [batchId, loadObjections]);
 
   const publicityActive = score?.publicityEnd && new Date(score.publicityEnd).getTime() > Date.now();
+  const isHistorical = score?.courseSummary?.source === 'HISTORICAL_IMPORT';
 
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
@@ -196,9 +197,9 @@ export default function MyScore() {
                   ) : (
                     <>
                       <span className="zc-rank-chip gold">
-                        <CrownOutlined /> 年级第 {score.rankGrade ?? '-'} 名
+                        <CrownOutlined /> {score.rankGrade == null ? '年级排名未提供' : `年级第 ${score.rankGrade} 名`}
                       </span>
-                      <span className="zc-rank-chip">班级第 {score.rankClass ?? '-'} 名</span>
+                      <span className="zc-rank-chip">{score.rankClass == null ? '班级排名未提供' : `班级第 ${score.rankClass} 名`}</span>
                     </>
                   )}
                 </div>
@@ -234,20 +235,20 @@ export default function MyScore() {
                       <i>/ {D.max}</i>
                     </span>
                   </div>
-                  <div>
+                  {!isHistorical && <div>
                     {D.rows(d).map(([name, v]) => (
                       <div key={name} className="zc-dim2-row">
                         <span>{name}</span>
                         <b className={`zc-num ${Number(v) < 0 ? 'neg' : ''}`}>{fv(v)}</b>
                       </div>
                     ))}
-                  </div>
+                  </div>}
                 </section>
               );
             })}
           </div>
 
-          {!!score.flags?.length && (
+          {!isHistorical && !!score.flags?.length && (
             <Alert
               type="warning"
               showIcon
@@ -261,7 +262,7 @@ export default function MyScore() {
             className="zc-list-card"
             title={
               <span className="zc-card-title">
-                <FileSearchOutlined className="zc-card-ticon" /> 计算明细（可解释）
+                <FileSearchOutlined className="zc-card-ticon" /> {isHistorical ? '历史结果说明' : '计算明细（可解释）'}
               </span>
             }
           >

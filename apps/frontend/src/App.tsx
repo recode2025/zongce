@@ -23,6 +23,7 @@ const Publish = lazy(() => import('./pages/admin/Publish'));
 const ExportCenter = lazy(() => import('./pages/admin/Export'));
 const System = lazy(() => import('./pages/admin/System'));
 const Scholarship = lazy(() => import('./pages/admin/Scholarship'));
+const HistoricalImport = lazy(() => import('./pages/admin/HistoricalImport'));
 
 const FULL_SCREEN = { display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh' };
 
@@ -107,6 +108,7 @@ export default function App() {
         <Route path="publish" element={<RoleGate roles={['GRADE_ADMIN']}><Publish /></RoleGate>} />
         <Route path="export" element={<RoleGate roles={['GRADE_ADMIN']}><ExportCenter /></RoleGate>} />
         <Route path="scholarship" element={<RoleGate roles={['GRADE_ADMIN']}><Scholarship /></RoleGate>} />
+        <Route path="historical-import" element={<RoleGate roles={[]}><HistoricalImport /></RoleGate>} />
         <Route path="system" element={<RoleGate roles={['GRADE_ADMIN']}><System /></RoleGate>} />
       </Route>
 

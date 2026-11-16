@@ -19,6 +19,11 @@ export class CalcService {
     if (user.role !== Role.SUPER_ADMIN) throw new ForbiddenException('跨年级计算仅限超级管理员');
     const batch = await this.prisma.batch.findUnique({ where: { id: batchId } });
     if (!batch) throw new BadRequestException('批次不存在');
+    // 历史结果只有汇总，没有完整的课程和审核记录；重算会用缺失输入生成虚假成绩。
+    const historical = await this.prisma.calcResult.findFirst({
+      where: { batchId, engineVersion: 'HISTORICAL' }, select: { id: true },
+    });
+    if (historical) throw new BadRequestException('历史导入批次不支持试算或重算');
     if (batch.status === BatchStatus.DRAFT || batch.status === BatchStatus.DATA_PREP) {
       throw new BadRequestException('批次尚未开始收集材料，无需计算');
     }
@@ -38,6 +43,11 @@ export class CalcService {
   private async execute(ctx: JobContext, batchId: string, dryRun: boolean, user: JwtUser) {
     const batch = await ctx.prisma.batch.findUnique({ where: { id: batchId } });
     if (!batch) throw new Error('批次不存在');
+    // 异步任务执行前再次验证，避免排队期间状态变化后执行错误的计算。
+    const historical = await ctx.prisma.calcResult.findFirst({
+      where: { batchId, engineVersion: 'HISTORICAL' }, select: { id: true },
+    });
+    if (historical) throw new BadRequestException('历史导入批次不支持试算或重算');
 
     // 1. 规则口径（优先批次快照 overrides.caps）
     const snapshot = await ctx.prisma.batchRule.findMany({ where: { batchId }, include: { ruleItem: true } });
