@@ -3,7 +3,8 @@ import { IsOptional, IsString } from 'class-validator';
 import { EnrollStatus, Role } from '@zc/shared';
 import { PrismaService } from '../../prisma/prisma.module';
 import { AuditService } from '../audit/audit.service';
-import { ClientIp, CurrentUser, Roles } from '../../common/decorators';
+import { ClientIp, CurrentUser, JwtUser, Roles } from '../../common/decorators';
+import { assertStudentScope, studentScope } from '../../common/utils/scope';
 import { StudentsImportService } from '../imports/students-import.service';
 
 class PatchStudentDto {
@@ -18,6 +19,7 @@ export class StudentsController {
   @Get()
   @Roles(Role.GRADE_ADMIN, Role.CLASS_LEADER)
   async list(
+    @CurrentUser() user: JwtUser,
     @Query('grade') grade?: string,
     @Query('classId') classId?: string,
     @Query('enrollStatus') enrollStatus?: string,
@@ -25,9 +27,8 @@ export class StudentsController {
     @Query('page', new DefaultValuePipe(1), ParseIntPipe) page = 1,
     @Query('pageSize', new DefaultValuePipe(30), ParseIntPipe) pageSize = 30,
   ) {
-    const where: any = {};
-    if (grade) where.grade = Number(grade);
-    if (classId) where.classId = classId;
+    const where: any = studentScope(user, classId);
+    if (grade && where.grade == null) where.grade = Number(grade);
     if (enrollStatus) where.enrollStatus = enrollStatus;
     if (keyword) where.OR = [{ studentNo: { contains: keyword } }, { name: { contains: keyword } }];
     const [items, total] = await this.prisma.$transaction([
@@ -48,21 +49,25 @@ export class StudentsController {
 
   @Patch(':id')
   @Roles(Role.GRADE_ADMIN)
-  async patch(@Param('id') id: string, @Body() dto: PatchStudentDto, @CurrentUser('id') operatorId: string, @ClientIp() ip: string) {
+  async patch(@Param('id') id: string, @Body() dto: PatchStudentDto, @CurrentUser() user: JwtUser, @ClientIp() ip: string) {
     const data: any = {};
     if (dto.enrollStatus) data.enrollStatus = dto.enrollStatus;
     if (dto.name) data.name = dto.name.slice(0, 64);
     if (Object.keys(data).length === 0) throw new BadRequestException('无更新内容');
-    await this.prisma.student.update({ where: { id }, data });
+    const scope = studentScope(user);
+    const result = await this.prisma.student.updateMany({ where: { id, ...scope }, data });
+    if (!result.count) throw new BadRequestException('学生不存在或无权修改');
     // 学籍状态变化 → 重建学籍异常队列
-    if (dto.enrollStatus) await this.studentsImport.rebuildSuspensionIssues();
-    await this.audit.log({ operatorId, action: 'STUDENT_UPDATE', resourceType: 'student', resourceId: id, detail: { fields: Object.keys(dto) }, ip });
+    if (dto.enrollStatus) await this.studentsImport.rebuildSuspensionIssues(scope.grade);
+    await this.audit.log({ operatorId: user.id, action: 'STUDENT_UPDATE', resourceType: 'student', resourceId: id, detail: { fields: Object.keys(dto) }, ip });
     return { success: true };
   }
 
   @Get('classes')
-  async classes(@Query('grade') grade?: string) {
-    const where = grade ? { grade: Number(grade) } : undefined;
+  @Roles(Role.GRADE_ADMIN, Role.CLASS_LEADER)
+  async classes(@Query('grade') grade: string | undefined, @CurrentUser() user: JwtUser) {
+    const scope = studentScope(user);
+    const where = { ...(scope.classId ? { id: scope.classId } : {}), ...(scope.grade != null ? { grade: scope.grade } : grade ? { grade: Number(grade) } : {}) };
     const items = await this.prisma.clazz.findMany({
       where,
       orderBy: { name: 'asc' },
@@ -74,19 +79,24 @@ export class StudentsController {
   /** 绑定班级负责人（班委账号） */
   @Post('classes/:id/leader')
   @Roles(Role.GRADE_ADMIN)
-  async bindLeader(@Param('id') id: string, @Body() body: { userId?: string; studentNo?: string }, @CurrentUser('id') operatorId: string, @ClientIp() ip: string) {
-    let userId = body.userId;
-    if (!userId && body.studentNo) {
-      const stu = await this.prisma.student.findUnique({ where: { studentNo: body.studentNo }, include: { clazz: true } });
-      if (!stu?.userId) throw new BadRequestException('该学生没有登录账号');
-      if (stu.clazz && stu.clazz.id !== id) throw new BadRequestException('该学生不属于本班');
-      userId = stu.userId;
-    }
-    if (!userId) throw new BadRequestException('缺少 userId 或 studentNo');
-    // 该用户升级为班委角色
-    await this.prisma.user.update({ where: { id: userId }, data: { role: Role.CLASS_LEADER } });
-    await this.prisma.clazz.update({ where: { id }, data: { leaderId: userId } });
-    await this.audit.log({ operatorId, action: 'USER_UPDATE', resourceType: 'class', resourceId: id, detail: { leaderUserId: userId }, ip });
+  async bindLeader(@Param('id') id: string, @Body() body: { userId?: string; studentNo?: string }, @CurrentUser() user: JwtUser, @ClientIp() ip: string) {
+    const scope = studentScope(user);
+    const clazz = await this.prisma.clazz.findFirst({ where: { id, ...(scope.grade != null ? { grade: scope.grade } : {}) } });
+    if (!clazz) throw new BadRequestException('班级不存在或无权修改');
+    if (!body.userId && !body.studentNo) throw new BadRequestException('缺少 userId 或 studentNo');
+    const stu = await this.prisma.student.findFirst({ where: { classId: id, ...(body.userId ? { userId: body.userId } : { studentNo: body.studentNo }) }, include: { user: true } });
+    if (!stu?.userId || !stu.user || ![Role.STUDENT, Role.CLASS_LEADER].includes(stu.user.role as Role)) throw new BadRequestException('该学生不属于本班或没有有效的学生账号');
+    assertStudentScope(user, stu);
+    const userId = stu.userId;
+    await this.prisma.$transaction(async (tx) => {
+      // 换届时旧班委不应保留本班管理权限。
+      if (clazz.leaderId && clazz.leaderId !== userId) {
+        await tx.user.updateMany({ where: { id: clazz.leaderId, role: Role.CLASS_LEADER }, data: { role: Role.STUDENT } });
+      }
+      await tx.user.update({ where: { id: userId }, data: { role: Role.CLASS_LEADER } });
+      await tx.clazz.update({ where: { id }, data: { leaderId: userId } });
+    });
+    await this.audit.log({ operatorId: user.id, action: 'USER_UPDATE', resourceType: 'class', resourceId: id, detail: { leaderUserId: userId }, ip });
     return { success: true };
   }
 }

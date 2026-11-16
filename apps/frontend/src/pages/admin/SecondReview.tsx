@@ -6,7 +6,7 @@ import { ClassInfo, fetchApplicationDetail, fetchApplications, fetchClasses, sec
 import { errMsg } from '../../api/client';
 import { AppStatusTag, BatchSelect, fmtTime } from '../../components/common';
 
-/** 辅导员复审工作台：核定 grantedScore（可逐项改分）→ 批量通过/驳回 */
+/** 管理员复审工作台：核定 grantedScore（可逐项改分）→ 批量通过/驳回 */
 export default function SecondReview() {
   const { message } = App.useApp();
   const [batchId, setBatchId] = useState('');

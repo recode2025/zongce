@@ -12,15 +12,19 @@ RUN npm i -g pnpm@11.23.0
 # openssl-1.1.x 引擎并告警 may not work as expected。构建阶段装上才能在
 # prisma generate 时选中 bookworm 的 openssl-3 引擎（与运行阶段保持一致）
 RUN apt-get update && apt-get install -y --no-install-recommends openssl && rm -rf /var/lib/apt/lists/*
-COPY pnpm-workspace.yaml package.json tsconfig.base.json ./
+COPY pnpm-lock.yaml pnpm-workspace.yaml package.json tsconfig.base.json ./
 COPY packages/shared/package.json packages/shared/
 COPY apps/backend/package.json apps/backend/
-RUN pnpm install --frozen-lockfile=false --filter @zc/backend... --filter @zc/shared...
-COPY packages/shared packages/shared
-COPY apps/backend apps/backend
+RUN pnpm install --frozen-lockfile --filter @zc/backend... --filter @zc/shared...
+COPY packages/shared/tsconfig.json packages/shared/
+COPY packages/shared/src packages/shared/src
+COPY apps/backend/tsconfig.json apps/backend/
+COPY apps/backend/src apps/backend/src
+COPY apps/backend/prisma/schema.prisma apps/backend/prisma/
+COPY apps/backend/prisma/tsconfig.json apps/backend/prisma/seed.ts apps/backend/prisma/rules-2026.ts apps/backend/prisma/
 # build:image = prisma generate && tsc：冷构建必须显式 generate
 # （pnpm 11 默认拦截 @prisma/client 的 postinstall 自动生成）
-RUN pnpm --filter @zc/shared build && pnpm --filter @zc/backend build:image
+RUN pnpm --filter @zc/shared build && pnpm --filter @zc/backend build:image && pnpm --filter @zc/backend exec tsc -p prisma/tsconfig.json
 
 # ---- runtime ----
 FROM node:22-slim

@@ -12,6 +12,9 @@ const prisma = new PrismaClient();
 async function main() {
   // 1. 超管
   const adminPassword = process.env.INITIAL_ADMIN_PASSWORD || 'Admin@Zc2026';
+  if (process.env.NODE_ENV === 'production' && (adminPassword.length < 12 || adminPassword === 'Admin@Zc2026' || /changeme/i.test(adminPassword))) {
+    throw new Error('INITIAL_ADMIN_PASSWORD must be a unique production password of at least 12 characters');
+  }
   const admin = await prisma.user.upsert({
     where: { username: 'admin' },
     update: {},

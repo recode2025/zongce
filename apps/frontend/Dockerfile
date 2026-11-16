@@ -10,7 +10,7 @@ RUN npm i -g pnpm@11.23.0
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json turbo.json tsconfig.base.json ./
 COPY packages/shared/package.json packages/shared/
 COPY apps/frontend/package.json apps/frontend/
-RUN pnpm install --frozen-lockfile=false
+RUN pnpm install --frozen-lockfile
 COPY packages/shared packages/shared
 COPY apps/frontend apps/frontend
 RUN pnpm --filter @zc/frontend build

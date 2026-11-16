@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
-import { App, Button, Card, Form, Input, Modal, Popconfirm, Select, Space, Switch, Table, Tabs, Tag, Typography } from 'antd';
-import { KeyOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
-import { createAnnouncement, createUser, deleteAnnouncement, fetchAnnouncements, fetchAuditLogs, fetchBatches, fetchUsers, resetPwdBatch, updateUser } from '../../api';
+import { Alert, App, Button, Card, Form, Input, Modal, Popconfirm, Select, Space, Switch, Table, Tabs, Tag, Typography } from 'antd';
+import { KeyOutlined, PlusOutlined, ReloadOutlined, SafetyCertificateOutlined, SendOutlined } from '@ant-design/icons';
+import { createAnnouncement, createUser, deleteAnnouncement, fetchAnnouncements, fetchApplySwitch, fetchAuditLogs, fetchBatches, fetchLoginPassphrase, fetchUsers, resetPwdBatch, updateApplySwitch, updateLoginPassphrase, updateUser } from '../../api';
 import { errMsg } from '../../api/client';
 import { fmtTime } from '../../components/common';
 import { ROLE_TEXT, useAuth } from '../../store/auth';
@@ -30,6 +30,7 @@ const AUDIT_ACTION: Record<string, string> = {
   WHITELIST_ADD: '白名单追加',
   WHITELIST_REMOVE: '白名单删除',
   USER_UPDATE: '用户变更',
+  APPLY_SWITCH: '提交通道开关',
   STUDENT_UPDATE: '学生变更',
   FILE_UPLOAD: '文件上传',
   APPLICATION_SUBMIT: '提交申请',
@@ -37,16 +38,120 @@ const AUDIT_ACTION: Record<string, string> = {
   WITHDRAW: '撤回申请',
 };
 
-/** 系统管理：用户角色 / 审计日志 / 公告（用户与审计仅超管） */
+/** 系统管理：用户角色 / 审计日志 / 公告 / 安全设置（用户与审计仅超管） */
 export default function System() {
+  const canManage = useAuth().user?.role === 'SUPER_ADMIN';
   return (
     <Tabs
       items={[
-        { key: 'users', label: '用户与角色', children: <Users /> },
-        { key: 'audit', label: '审计日志', children: <Audit /> },
+        ...(canManage ? [{ key: 'users', label: '用户与角色', children: <Users /> },
+        { key: 'audit', label: '审计日志', children: <Audit /> }] : []),
         { key: 'ann', label: '公告', children: <Announcements /> },
+        { key: 'security', label: '安全设置', children: <Security /> },
       ]}
     />
+  );
+}
+
+/** 安全设置：管理员登录密语口令 + 学生提交通道开关 */
+function Security() {
+  const { message } = App.useApp();
+  const canManage = useAuth().user?.role === 'SUPER_ADMIN';
+  const [value, setValue] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  // 学生提交通道开关（服务端强制）
+  const [applyEnabled, setApplyEnabled] = useState(true);
+  const [applyLoading, setApplyLoading] = useState(true);
+  const [switching, setSwitching] = useState(false);
+
+  useEffect(() => {
+    if (canManage) fetchLoginPassphrase()
+      .then((r) => setValue(r.value))
+      .catch((e) => message.error(errMsg(e)))
+      .finally(() => setLoading(false));
+    fetchApplySwitch()
+      .then((r) => setApplyEnabled(r.enabled))
+      .catch(() => undefined)
+      .finally(() => setApplyLoading(false));
+  }, [message, canManage]);
+
+  const save = async () => {
+    const v = value.trim();
+    if (v.length < 4) {
+      message.warning('密语口令至少 4 个字符');
+      return;
+    }
+    setSaving(true);
+    try {
+      await updateLoginPassphrase(v);
+      message.success('密语口令已更新，立即生效');
+    } catch (e) {
+      message.error(errMsg(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const toggleApply = async (v: boolean) => {
+    setSwitching(true);
+    try {
+      const r = await updateApplySwitch(v);
+      setApplyEnabled(r.enabled);
+      message.success(r.enabled ? '提交通道已开启' : '提交通道已关闭（服务端强制，立即生效）');
+    } catch (e) {
+      message.error(errMsg(e));
+    } finally {
+      setSwitching(false);
+    }
+  };
+
+  return (
+    <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+      <Card size="small" title={<Space><SendOutlined /> 学生提交通道</Space>} style={{ maxWidth: 560 }}>
+        <Alert
+          style={{ marginBottom: 16 }}
+          type={applyEnabled ? 'success' : 'error'}
+          showIcon
+          message={applyEnabled ? '提交通道：开启中' : '提交通道：已关闭'}
+          description="关闭后学生端立即无法提交加分申报与材料包（服务端强制校验，修改前端代码也无法绕过）；批次阶段限制仍独立生效。适用于收集截止后临时封口、或需要暂停受理进行调整的场景。"
+        />
+        <Space size="middle">
+          <Switch checked={applyEnabled} loading={applyLoading || switching} onChange={toggleApply} disabled={applyLoading || !canManage} />
+          <Typography.Text type="secondary" style={{ fontSize: 13 }}>
+            {applyEnabled ? '学生可正常提交' : '暂停受理一切学生提交'}
+          </Typography.Text>
+        </Space>
+      </Card>
+
+      {canManage && <Card size="small" title={<Space><SafetyCertificateOutlined /> 登录密语口令</Space>} style={{ maxWidth: 560 }}>
+      <Alert
+        style={{ marginBottom: 16 }}
+        type="info"
+        showIcon
+        message="管理员登录第一道门：点击「管理员登录」后须先输入此口令完成验证，通过后 10 分钟内免重复验证。"
+        description="口令在管理员本地登录时于后端强制校验（学生数字大外登录不受影响）；泄露或周期性更换时在此修改，立即生效。"
+      />
+      <Space.Compact block>
+        <Input.Password
+          size="large"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          placeholder="登录密语口令（4-64 个字符）"
+          maxLength={64}
+          disabled={loading}
+          visibilityToggle
+        />
+        <Button type="primary" size="large" loading={saving} onClick={save}>
+          保存
+        </Button>
+      </Space.Compact>
+      <Typography.Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0, fontSize: 12 }}>
+        默认口令为 DUFL1964；修改后请同步通知需要登录管理端的老师
+      </Typography.Paragraph>
+    </Card>}
+    </Space>
   );
 }
 
@@ -220,7 +325,7 @@ function Users() {
               <Select style={{ width: 150 }} options={Object.entries(ROLE_TEXT).filter(([v]) => v !== 'STUDENT').map(([v, l]) => ({ value: v, label: l }))} />
             </Form.Item>
           </Space>
-          <Form.Item name="grade" label="负责年级（辅导员）">
+          <Form.Item name="grade" label="负责年级（管理员）">
             <Input style={{ width: 180 }} placeholder="如 2025" />
           </Form.Item>
           <Form.Item name="password" label="初始密码（留空则随机生成）">
@@ -303,6 +408,7 @@ function Audit() {
 
 function Announcements() {
   const { message } = App.useApp();
+  const canManage = useAuth().user?.role === 'SUPER_ADMIN';
   const [rows, setRows] = useState<any[]>([]);
   const [batches, setBatches] = useState<any[]>([]);
   const [open, setOpen] = useState(false);
@@ -317,7 +423,7 @@ function Announcements() {
   }, []);
 
   return (
-    <Card size="small" title="公告" extra={<Button size="small" icon={<PlusOutlined />} onClick={() => setOpen(true)}>发布公告</Button>}>
+    <Card size="small" title="公告" extra={canManage && <Button size="small" icon={<PlusOutlined />} onClick={() => setOpen(true)}>发布公告</Button>}>
       <Table
         size="small"
         rowKey="id"
@@ -330,7 +436,7 @@ function Announcements() {
           {
             title: '操作',
             width: 70,
-            render: (_, r: any) => (
+            render: (_, r: any) => canManage && (
               <Popconfirm
                 title="删除公告"
                 onConfirm={async () => {

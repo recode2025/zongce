@@ -6,6 +6,7 @@ import { ClassInfo, bindClassLeader, fetchClasses, fetchJobs, fetchStudents, pat
 import { errMsg } from '../../api/client';
 import ImportWizard from '../../components/ImportWizard';
 import { fmtTime } from '../../components/common';
+import { useAuth } from '../../store/auth';
 
 const ENROLL_LABEL: Record<string, string> = {
   NORMAL: '有学籍',
@@ -18,14 +19,15 @@ const ENROLL_COLOR: Record<string, string> = { NORMAL: 'success', SUSPENDED: 'wa
 /** 学生管理：导入向导 / 名册（学籍修正） / 班级与班委绑定 */
 export default function Students() {
   const { message } = App.useApp();
-  const [tab, setTab] = useState('import');
+  const canImport = useAuth().user?.role === 'SUPER_ADMIN';
+  const [tab, setTab] = useState(canImport ? 'import' : 'roster');
 
   return (
     <Tabs
       activeKey={tab}
       onChange={setTab}
       items={[
-        { key: 'import', label: '学生导入', children: <ImportTab /> },
+        ...(canImport ? [{ key: 'import', label: '学生导入', children: <ImportTab /> }] : []),
         { key: 'roster', label: '学生名册', children: <Roster /> },
         { key: 'classes', label: '班级与班委', children: <Classes message={message} /> },
       ]}

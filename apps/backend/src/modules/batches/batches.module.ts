@@ -1,9 +1,11 @@
-import { BadRequestException, Body, Controller, Get, Module, Param, Post, Query } from '@nestjs/common';
-import { IsArray, IsIn, IsOptional, IsString } from 'class-validator';
+import { BadRequestException, Body, Controller, Get, Module, Param, Post, Put, Query } from '@nestjs/common';
+import { IsArray, IsBoolean, IsIn, IsOptional, IsString } from 'class-validator';
 import { BATCH_STATUS_FLOW, BatchStatus, Role } from '@zc/shared';
 import { PrismaService } from '../../prisma/prisma.module';
 import { AuditService } from '../audit/audit.service';
-import { ClientIp, CurrentUser, Roles } from '../../common/decorators';
+import { ClientIp, CurrentUser, JwtUser, Roles } from '../../common/decorators';
+import { studentScope } from '../../common/utils/scope';
+import { APPLY_SWITCH_KEY } from '../applications/applications.service';
 
 export interface PhaseRange {
   phase: string;
@@ -23,16 +25,28 @@ class TransitionDto {
   to: BatchStatus;
 }
 
+class ApplySwitchDto {
+  @IsBoolean()
+  enabled: boolean;
+}
+
 @Controller('batches')
 export class BatchesController {
   constructor(private prisma: PrismaService, private audit: AuditService) {}
 
   @Get()
   @Roles(Role.GRADE_ADMIN, Role.CLASS_LEADER)
-  async list() {
+  async list(@CurrentUser() user: JwtUser) {
+    const scope = studentScope(user);
+    const scoped = Object.keys(scope).length > 0;
+    const scopedCount = { where: { student: scope } };
     const items = await this.prisma.batch.findMany({
       orderBy: { createdAt: 'desc' },
-      include: { _count: { select: { applications: true, courseGrades: true, calcResults: true, snapshots: true, objections: true } } },
+      include: { _count: { select: {
+        applications: scoped ? scopedCount : true, courseGrades: scoped ? scopedCount : true,
+        calcResults: scoped ? scopedCount : true, objections: scoped ? scopedCount : true,
+        ...(!scoped ? { snapshots: true } : {}),
+      } } },
     });
     return items.map((b) => ({
       ...b,
@@ -40,15 +54,38 @@ export class BatchesController {
     }));
   }
 
-  /** 当前进行中的批次（学生端首页用） */
+  /** 当前进行中的批次（学生端首页用；附提交通道开关状态） */
   @Get('active')
   async active(@CurrentUser('grade') grade: number | null) {
     const list = await this.prisma.batch.findMany({ where: { status: { not: 'ARCHIVED' } }, orderBy: { createdAt: 'desc' } });
-    return list.length ? list[0] : null;
+    if (!list.length) return null;
+    const row = await this.prisma.sysConfig.findUnique({ where: { key: APPLY_SWITCH_KEY } });
+    return { ...list[0], applyEnabled: row?.value !== 'false' };
+  }
+
+  /** 学生提交通道开关（后台系统设置用；提交接口在服务端强制校验） */
+  @Get('apply-switch')
+  @Roles(Role.GRADE_ADMIN)
+  async getApplySwitch() {
+    const row = await this.prisma.sysConfig.findUnique({ where: { key: APPLY_SWITCH_KEY } });
+    return { enabled: row?.value !== 'false' };
+  }
+
+  @Put('apply-switch')
+  @Roles(Role.SUPER_ADMIN)
+  async setApplySwitch(@Body() dto: ApplySwitchDto, @CurrentUser('id') operatorId: string, @ClientIp() ip: string) {
+    const enabled = dto.enabled !== false;
+    await this.prisma.sysConfig.upsert({
+      where: { key: APPLY_SWITCH_KEY },
+      update: { value: String(enabled) },
+      create: { key: APPLY_SWITCH_KEY, value: String(enabled) },
+    });
+    await this.audit.log({ operatorId, action: 'APPLY_SWITCH', resourceType: 'sysConfig', resourceId: APPLY_SWITCH_KEY, detail: { enabled }, ip });
+    return { enabled };
   }
 
   @Post()
-  @Roles(Role.GRADE_ADMIN)
+  @Roles(Role.SUPER_ADMIN)
   async create(@Body() dto: CreateBatchDto, @CurrentUser('id') operatorId: string, @ClientIp() ip: string) {
     if (!/^\d{4}-\d{4}-[12]$/.test(dto.semesterKey)) throw new BadRequestException('学期格式应为 2025-2026-1');
     const exists = await this.prisma.batch.findUnique({ where: { semesterKey: dto.semesterKey } });
@@ -62,7 +99,7 @@ export class BatchesController {
 
   /** 激活规则快照：把当前 RuleItem 字典复制为本批次 BatchRule */
   @Post(':id/activate-rules')
-  @Roles(Role.GRADE_ADMIN)
+  @Roles(Role.SUPER_ADMIN)
   async activateRules(@Param('id') id: string, @CurrentUser('id') operatorId: string, @ClientIp() ip: string) {
     const items = await this.prisma.ruleItem.findMany({ where: { isActive: true } });
     await this.prisma.batchRule.deleteMany({ where: { batchId: id } });
@@ -75,7 +112,7 @@ export class BatchesController {
 
   /** 阶段流转（含门禁校验） */
   @Post(':id/transition')
-  @Roles(Role.GRADE_ADMIN)
+  @Roles(Role.SUPER_ADMIN)
   async transition(@Param('id') id: string, @Body() dto: TransitionDto, @CurrentUser('id') operatorId: string, @ClientIp() ip: string) {
     const batch = await this.prisma.batch.findUnique({ where: { id } });
     if (!batch) throw new BadRequestException('批次不存在');

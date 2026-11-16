@@ -23,9 +23,10 @@ export class StorageService {
     const dir = path.join(env.uploadDir, subDir);
     fs.mkdirSync(dir, { recursive: true });
     const storedPath = path.join(subDir, `${uuid}.${realExt}`);
-    fs.writeFileSync(path.join(env.uploadDir, storedPath), opts.buffer);
-
-    const file = await this.prisma.fileObject.create({
+    let file;
+    try {
+      fs.writeFileSync(path.join(env.uploadDir, storedPath), opts.buffer);
+      file = await this.prisma.fileObject.create({
       data: {
         uuid,
         originalName: sanitizeFileName(opts.originalName, realExt),
@@ -37,8 +38,21 @@ export class StorageService {
         kind: opts.kind ?? 'FILE',
         uploaderId: opts.uploaderId,
       },
-    });
+      });
+    } catch (error) {
+      // 登记失败时不能留下无法追踪的文件。
+      await fs.promises.rm(path.join(env.uploadDir, storedPath), { force: true });
+      throw error;
+    }
     return { id: file.id, uuid, ext: realExt, size: file.size };
+  }
+
+  /** 丢弃刚上传、尚未关联业务数据的文件；删除文件失败时保留记录以便排查。 */
+  async discardUpload(id: string): Promise<void> {
+    const file = await this.prisma.fileObject.findUnique({ where: { id } });
+    if (!file) return;
+    await fs.promises.rm(this.absPath(file.storedPath), { force: true });
+    await this.prisma.fileObject.delete({ where: { id } });
   }
 
   absPath(storedPath: string): string {
@@ -53,20 +67,20 @@ export class StorageService {
     return this.prisma.fileObject.findUnique({ where: { uuid } });
   }
 
-  /** 生成导出类文件 */
-  async saveExport(buffer: Buffer, fileName: string, uploaderId?: string): Promise<{ id: string; uuid: string }> {
+  /** 生成导出类文件（默认 xlsx；zip 打包导出传 ext='zip'） */
+  async saveExport(buffer: Buffer, fileName: string, uploaderId?: string, ext: 'xlsx' | 'zip' = 'xlsx'): Promise<{ id: string; uuid: string }> {
     const uuid = randomUUID();
     const subDir = uuid.slice(0, 2);
     const dir = path.join(env.uploadDir, subDir);
     fs.mkdirSync(dir, { recursive: true });
-    const storedPath = path.join(subDir, `${uuid}.xlsx`);
+    const storedPath = path.join(subDir, `${uuid}.${ext}`);
     fs.writeFileSync(path.join(env.uploadDir, storedPath), buffer);
     const file = await this.prisma.fileObject.create({
       data: {
         uuid,
         originalName: fileName.slice(0, 255),
-        ext: 'xlsx',
-        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        ext,
+        mimeType: ext === 'zip' ? 'application/zip' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         size: buffer.length,
         sha256: sha256Hex(buffer),
         storedPath: storedPath.replace(/\\/g, '/'),

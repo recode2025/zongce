@@ -45,7 +45,7 @@ export class NotifyController {
   }
 
   @Post('announcements')
-  @Roles(Role.GRADE_ADMIN)
+  @Roles(Role.SUPER_ADMIN)
   async createAnnouncement(@Body() dto: AnnouncementDto, @CurrentUser('id') userId: string) {
     if (dto.title.trim().length === 0 || dto.content.trim().length === 0) throw new BadRequestException('标题和内容不能为空');
     return this.prisma.announcement.create({
@@ -54,7 +54,7 @@ export class NotifyController {
   }
 
   @Post('announcements/:id')
-  @Roles(Role.GRADE_ADMIN)
+  @Roles(Role.SUPER_ADMIN)
   async deleteAnnouncement(@Param('id') id: string) {
     await this.prisma.announcement.delete({ where: { id } }).catch(() => {
       throw new ForbiddenException('公告不存在');

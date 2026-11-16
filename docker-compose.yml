@@ -5,10 +5,10 @@ services:
     image: mysql:8.0
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root_ChangeMe2026}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in .env}
       MYSQL_DATABASE: zongce
       MYSQL_USER: zc
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-ChangeMe_Zc2026}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env}
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_0900_ai_ci
@@ -26,7 +26,8 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "512mb", "--maxmemory-policy", "volatile-ttl"]
+    # AI 调用额度依赖 Redis 持久化；每次写入后同步 AOF，避免故障回滚已消耗额度。
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "always", "--maxmemory", "512mb", "--maxmemory-policy", "volatile-ttl"]
     volumes:
       - redis-data:/data
     healthcheck:
@@ -43,11 +44,18 @@ services:
     environment:
       NODE_ENV: production
       PORT: 3000
-      DATABASE_URL: mysql://zc:${MYSQL_PASSWORD:-ChangeMe_Zc2026}@mysql:3306/zongce?charset=utf8mb4
+      DATABASE_URL: mysql://zc:${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env}@mysql:3306/zongce?charset=utf8mb4
       REDIS_URL: redis://redis:6379/0
-      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-ChangeMe_9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c}
-      AES_KEY_HEX: ${AES_KEY_HEX:-00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff}
-      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-Admin@Zc2026}
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?Set JWT_ACCESS_SECRET in .env}
+      AES_KEY_HEX: ${AES_KEY_HEX:?Set AES_KEY_HEX in .env}
+      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:?Set INITIAL_ADMIN_PASSWORD in .env}
+      TRUST_PROXY: 'true' # backend 仅暴露在 Compose 网络内，由 nginx 覆写转发头
+      CORS_ORIGIN: ${CORS_ORIGIN:?Set CORS_ORIGIN to the frontend origin in .env}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-flash}
+      AI_DAILY_USER_LIMIT: ${AI_DAILY_USER_LIMIT:-10}
+      AI_DAILY_GLOBAL_LIMIT: ${AI_DAILY_GLOBAL_LIMIT:-1000}
+      AI_CONCURRENT_LIMIT: ${AI_CONCURRENT_LIMIT:-5}
       UPLOAD_DIR: /app/uploads
     volumes:
       - uploads:/app/uploads

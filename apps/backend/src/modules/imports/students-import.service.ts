@@ -123,15 +123,15 @@ export class StudentsImportService {
   }
 
   /** 重建学籍异常 issue（幂等：先清未处理的） */
-  async rebuildSuspensionIssues() {
+  async rebuildSuspensionIssues(grade?: number) {
     const batches = await this.prisma.batch.findMany({ select: { id: true } });
     const abnormal = await this.prisma.student.findMany({
-      where: { enrollStatus: { in: [EnrollStatus.SUSPENDED, EnrollStatus.WITHDRAWN] } },
+      where: { enrollStatus: { in: [EnrollStatus.SUSPENDED, EnrollStatus.WITHDRAWN] }, ...(grade != null ? { grade } : {}) },
       select: { id: true },
     });
     for (const b of batches) {
       await this.prisma.gradeIssue.deleteMany({
-        where: { batchId: b.id, issueType: 'SUSPENDED', resolution: 'PENDING', resolvedBy: null },
+        where: { batchId: b.id, issueType: 'SUSPENDED', resolution: 'PENDING', resolvedBy: null, ...(grade != null ? { student: { grade } } : {}) },
       });
       if (abnormal.length) {
         await this.prisma.gradeIssue.createMany({

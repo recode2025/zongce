@@ -7,27 +7,16 @@ import dayjs from 'dayjs';
 import 'dayjs/locale/zh-cn';
 import App from './App';
 import { AuthProvider } from './store/auth';
+import { antdTheme } from './theme';
 import './global.css';
 
 dayjs.locale('zh-cn');
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <ConfigProvider
-      locale={zhCN}
-      theme={{
-        token: {
-          colorPrimary: '#2f54eb',
-          borderRadius: 8,
-          fontSize: 14,
-        },
-        components: {
-          Layout: { headerBg: '#fff', siderBg: '#001529' },
-        },
-      }}
-    >
+    <ConfigProvider locale={zhCN} theme={antdTheme}>
       <AntdApp>
-        <BrowserRouter>
+        <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
           <AuthProvider>
             <App />
           </AuthProvider>

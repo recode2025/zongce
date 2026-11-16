@@ -9,7 +9,9 @@ export interface ParsedSheet {
 
 /** SheetJS 统一解析 xlsx/xls(OLE2)/csv：取第一个非空 sheet，返回表头与行字典 */
 export function parseWorkbook(buffer: Buffer): ParsedSheet {
-  const wb = XLSX.read(buffer, { type: 'buffer', cellDates: false, codepage: 936 });
+  // 带 UTF-8 BOM 的文件必为 UTF-8：此时不可强制 codepage 936（GBK），否则中文表头会乱码
+  const hasBom = buffer.length >= 3 && buffer[0] === 0xef && buffer[1] === 0xbb && buffer[2] === 0xbf;
+  const wb = XLSX.read(buffer, { type: 'buffer', cellDates: false, ...(hasBom ? {} : { codepage: 936 }) });
   const sheetName = wb.SheetNames.find((n) => {
     const ws = wb.Sheets[n];
     return ws && ws['!ref'];

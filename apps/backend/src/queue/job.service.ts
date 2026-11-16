@@ -1,5 +1,7 @@
-import { Global, Injectable, Logger, Module, OnModuleInit } from '@nestjs/common';
+import { ConflictException, Global, Injectable, Logger, Module, OnModuleInit } from '@nestjs/common';
+import { TASK_FAILED_MESSAGE } from '@zc/shared';
 import { PrismaService } from '../prisma/prisma.module';
+import { publicExceptionMessage } from '../common/utils/public-error';
 
 export interface JobContext {
   jobId: string;
@@ -42,7 +44,7 @@ export class JobService implements OnModuleInit {
       where: { kind: opts.kind, batchId: opts.batchId ?? null, status: 'RUNNING' },
     });
     if (running) {
-      throw Object.assign(new Error('同类型任务正在执行中，请稍候'), { status: 409 });
+      throw new ConflictException('同类型任务正在执行中，请稍候');
     }
     const job = await this.prisma.importJob.create({
       data: {
@@ -70,9 +72,9 @@ export class JobService implements OnModuleInit {
           data: { status: 'DONE', progress: 100, summary: (result ?? {}) as object },
         });
       } catch (e: any) {
-        this.logger.error(`job ${opts.kind} ${job.id} failed: ${e?.message}`);
+        this.logger.error(`job ${opts.kind} ${job.id} failed: ${e?.message ?? e}`, e?.stack);
         await this.prisma.importJob
-          .update({ where: { id: job.id }, data: { status: 'FAILED', error: String(e?.message ?? e).slice(0, 2000) } })
+          .update({ where: { id: job.id }, data: { status: 'FAILED', error: publicExceptionMessage(e, TASK_FAILED_MESSAGE) } })
           .catch(() => undefined);
       }
     })();

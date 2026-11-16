@@ -3,7 +3,8 @@ import { IsArray, IsOptional, IsString } from 'class-validator';
 import { IssueResolution, Role } from '@zc/shared';
 import { PrismaService } from '../../prisma/prisma.module';
 import { AuditService } from '../audit/audit.service';
-import { ClientIp, CurrentUser, Roles } from '../../common/decorators';
+import { ClientIp, CurrentUser, JwtUser, Roles } from '../../common/decorators';
+import { assertStudentScope, studentScope } from '../../common/utils/scope';
 import { GradesImportService } from './grades-import.service';
 
 class ResolveDto {
@@ -30,6 +31,7 @@ export class GradesController {
   @Get('issues')
   @Roles(Role.GRADE_ADMIN)
   async issues(
+    @CurrentUser() user: JwtUser,
     @Query('batchId') batchId: string,
     @Query('type') type?: string,
     @Query('resolution') resolution?: string,
@@ -37,7 +39,9 @@ export class GradesController {
     @Query('pageSize', new DefaultValuePipe(20), ParseIntPipe) pageSize = 20,
   ) {
     if (!batchId) throw new BadRequestException('缺少批次');
-    const where: any = { batchId };
+    const scope = studentScope(user);
+    const scopedStudent = Object.keys(scope).length ? { student: scope } : {};
+    const where: any = { batchId, ...scopedStudent };
     if (type) where.issueType = type;
     if (resolution) where.resolution = resolution;
     const [items, total, typeCounts] = await this.prisma.$transaction([
@@ -52,7 +56,7 @@ export class GradesController {
         take: pageSize,
       }),
       this.prisma.gradeIssue.count({ where }),
-      this.prisma.gradeIssue.groupBy({ by: ['issueType', 'resolution'], where: { batchId }, orderBy: { issueType: 'asc' }, _count: { _all: true } }),
+      this.prisma.gradeIssue.groupBy({ by: ['issueType', 'resolution'], where: { batchId, ...scopedStudent }, orderBy: { issueType: 'asc' }, _count: { _all: true } }),
     ]);
     return { items, total, typeCounts };
   }
@@ -60,8 +64,9 @@ export class GradesController {
   /** 某门课多行成绩（RESIT_DUP 裁决时查看可选行） */
   @Get('issues/:id/lines')
   @Roles(Role.GRADE_ADMIN)
-  async issueLines(@Param('id') id: string) {
-    const issue = await this.prisma.gradeIssue.findUnique({ where: { id }, include: { courseGrade: true } });
+  async issueLines(@Param('id') id: string, @CurrentUser() user: JwtUser) {
+    const scope = studentScope(user);
+    const issue = await this.prisma.gradeIssue.findFirst({ where: { id, ...(Object.keys(scope).length ? { student: scope } : {}) }, include: { courseGrade: true } });
     if (!issue || !issue.courseGrade) return [];
     const g = issue.courseGrade;
     return this.prisma.courseGrade.findMany({
@@ -73,21 +78,29 @@ export class GradesController {
   /** 人工裁决 */
   @Patch('issues/:id/resolve')
   @Roles(Role.GRADE_ADMIN)
-  async resolve(@Param('id') id: string, @Body() dto: ResolveDto, @CurrentUser('id') operatorId: string, @ClientIp() ip: string) {
-    const issue = await this.prisma.gradeIssue.findUnique({ where: { id } });
-    if (!issue) throw new BadRequestException('异常记录不存在');
-    await this.prisma.gradeIssue.update({
-      where: { id },
+  async resolve(@Param('id') id: string, @Body() dto: ResolveDto, @CurrentUser() user: JwtUser, @ClientIp() ip: string) {
+    const scope = studentScope(user);
+    const scopedStudent = Object.keys(scope).length ? { student: scope } : {};
+    const issue = await this.prisma.gradeIssue.findFirst({ where: { id, ...scopedStudent }, include: { courseGrade: true } });
+    if (!issue) throw new BadRequestException('异常记录不存在或无权处理');
+    if (dto.pickedGradeId) {
+      const grade = issue.courseGrade;
+      const picked = grade && await this.prisma.courseGrade.findFirst({ where: { id: dto.pickedGradeId, studentId: issue.studentId, batchId: issue.batchId, termKey: grade.termKey, courseCode: grade.courseCode } });
+      if (!picked) throw new BadRequestException('所选成绩不属于该学生的同一课程');
+    }
+    const result = await this.prisma.gradeIssue.updateMany({
+      where: { id, ...scopedStudent },
       data: {
         resolution: dto.resolution,
         pickedGradeId: dto.pickedGradeId ?? null,
-        resolvedBy: operatorId,
+        resolvedBy: user.id,
         resolvedAt: new Date(),
         note: dto.note?.slice(0, 500),
       },
     });
+    if (!result.count) throw new BadRequestException('异常记录不存在或无权处理');
     await this.audit.log({
-      operatorId,
+      operatorId: user.id,
       action: 'GRADE_RESOLVE',
       resourceType: 'gradeIssue',
       resourceId: id,
@@ -100,19 +113,20 @@ export class GradesController {
   /** 批量裁决：按勾选 ids，或按类型（缺省=门禁类 MISSING/DEFERRED_EMPTY/DISQUALIFIED/NON_NUMERIC_SCORE）作用于全部待裁决 */
   @Post('issues/batch-resolve')
   @Roles(Role.GRADE_ADMIN)
-  async batchResolve(@Body() dto: BatchResolveDto, @CurrentUser('id') operatorId: string, @ClientIp() ip: string) {
+  async batchResolve(@Body() dto: BatchResolveDto, @CurrentUser() user: JwtUser, @ClientIp() ip: string) {
     if (dto.resolution !== 'INCLUDED' && dto.resolution !== 'EXCLUDED') throw new BadRequestException('批量裁决仅支持 计入/剔除');
-    const where: any = { batchId: dto.batchId, resolution: 'PENDING' };
+    const scope = studentScope(user);
+    const where: any = { batchId: dto.batchId, resolution: 'PENDING', ...(Object.keys(scope).length ? { student: scope } : {}) };
     if (dto.ids?.length) where.id = { in: dto.ids };
     else if (dto.type) where.issueType = dto.type;
     else where.issueType = { in: ['MISSING', 'DEFERRED_EMPTY', 'DISQUALIFIED', 'NON_NUMERIC_SCORE'] };
 
     const { count } = await this.prisma.gradeIssue.updateMany({
       where,
-      data: { resolution: dto.resolution, resolvedBy: operatorId, resolvedAt: new Date(), note: dto.note?.slice(0, 500) ?? '批量裁决' },
+      data: { resolution: dto.resolution, resolvedBy: user.id, resolvedAt: new Date(), note: dto.note?.slice(0, 500) ?? '批量裁决' },
     });
     await this.audit.log({
-      operatorId,
+      operatorId: user.id,
       action: 'GRADE_RESOLVE',
       resourceType: 'gradeIssue',
       resourceId: dto.batchId,
@@ -125,7 +139,11 @@ export class GradesController {
   /** 学生成绩明细 */
   @Get('students/:studentId')
   @Roles(Role.GRADE_ADMIN, Role.CLASS_LEADER)
-  async studentGrades(@Param('studentId') studentId: string, @Query('batchId') batchId: string, @Query('term') term?: string) {
+  async studentGrades(@CurrentUser() user: JwtUser, @Param('studentId') studentId: string, @Query('batchId') batchId: string, @Query('term') term?: string) {
+    const scope = studentScope(user);
+    const student = await this.prisma.student.findFirst({ where: { id: studentId, ...scope }, select: { classId: true, grade: true } });
+    if (!student) throw new BadRequestException('学生不存在或无权查看');
+    assertStudentScope(user, student);
     const batch = await this.prisma.batch.findUnique({ where: { id: batchId } });
     if (!batch) throw new BadRequestException('批次不存在');
     const rows = await this.prisma.courseGrade.findMany({

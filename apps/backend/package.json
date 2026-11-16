@@ -5,7 +5,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "build:image": "prisma generate && tsc -p tsconfig.json",
-    "dev": "pnpm db:generate && tsc -p tsconfig.json --watch --preserveWatchOutput & node --enable-source-maps --watch dist/main.js",
+    "dev": "node scripts/dev.mjs",
     "start": "node dist/main.js",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --runInBand",
     "db:generate": "prisma generate",
@@ -39,7 +39,7 @@
     "ioredis": "^5.4.2",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
-    "xlsx": "^0.18.5",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
     "yauzl": "^3.2.0"
   },
   "devDependencies": {

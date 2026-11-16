@@ -26,7 +26,5 @@ export const CurrentUser = createParamDecorator((data: keyof JwtUser | undefined
 
 export const ClientIp = createParamDecorator((_: unknown, ctx: ExecutionContext) => {
   const req = ctx.switchToHttp().getRequest();
-  const xff = req.headers['x-forwarded-for'];
-  if (typeof xff === 'string' && xff.length) return xff.split(',')[0].trim();
   return req.ip ?? 'unknown';
 });

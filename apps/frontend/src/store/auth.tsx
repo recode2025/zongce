@@ -1,13 +1,12 @@
 import { createContext, useContext, useEffect, useMemo, useState } from 'react';
-import { JwtUser, login as apiLogin, casLogin as apiCasLogin, logout as apiLogout, changePassword as apiChangePwd, restore } from '../api/auth';
+import { JwtUser, login as apiLogin, logout as apiLogout, changePassword as apiChangePwd, restore } from '../api/auth';
 
 export type { JwtUser } from '../api/auth';
 
 interface AuthCtx {
   user: JwtUser | null;
   ready: boolean; // 首次会话恢复完成（避免闪登录页）
-  login: (u: string, p: string, captcha?: { captchaId: string; captchaCode: string }) => Promise<JwtUser>;
-  casLogin: (u: string, p: string, captcha?: { captchaId: string; captchaCode: string }) => Promise<JwtUser>;
+  login: (u: string, p: string, gateToken: string, captcha?: { captchaId: string; captchaCode: string }) => Promise<JwtUser>;
   logout: () => Promise<void>;
   changePassword: (o: string, n: string) => Promise<JwtUser>;
   setUser: (u: JwtUser | null) => void;
@@ -33,8 +32,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       user,
       ready,
       setUser,
-      login: (u, p, c) => apiLogin(u, p, c).then((x) => (setUser(x), x)),
-      casLogin: (u, p, c) => apiCasLogin(u, p, c).then((x) => (setUser(x), x)),
+      login: (u, p, g, c) => apiLogin(u, p, g, c).then((x) => (setUser(x), x)),
       logout: async () => {
         await apiLogout();
         setUser(null);
@@ -52,7 +50,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
 export const ROLE_TEXT: Record<JwtUser['role'], string> = {
   SUPER_ADMIN: '超级管理员',
-  GRADE_ADMIN: '辅导员/管理员',
+  GRADE_ADMIN: '管理员',
   CLASS_LEADER: '班级负责人',
   STUDENT: '学生',
 };

@@ -45,8 +45,9 @@ export default function ZipBrowser({ uuid, zipName }: { uuid: string; zipName?: 
 
   if (!entries) {
     return (
-      <div style={{ padding: 48, textAlign: 'center' }}>
-        <Spin tip="读取压缩包目录…" />
+      <div style={{ padding: 48, textAlign: 'center' }} role="status" aria-live="polite">
+        <Spin />
+        <div style={{ marginTop: 12 }}>读取压缩包目录…</div>
       </div>
     );
   }

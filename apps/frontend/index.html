@@ -2,8 +2,19 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
     <title>软件学院综测平台</title>
+    <style>
+      /* 首帧关键样式：SPA 整页加载（CAS 回跳 / 手动刷新）时先画底色，避免白屏闪烁 */
+      html,
+      body,
+      #root {
+        height: 100%;
+        margin: 0;
+        background: #f1f3f6;
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>

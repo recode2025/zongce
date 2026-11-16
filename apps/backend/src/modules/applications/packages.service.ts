@@ -3,12 +3,15 @@ import archiver from 'archiver';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { Writable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { ActivityLevel, LEVEL_PREFIX, NAMING_RULES, PackageSection, PackageStatus, BatchStatus } from '@zc/shared';
 import { PrismaService } from '../../prisma/prisma.module';
 import { JwtUser } from '../../common/decorators';
 import { AuditService } from '../audit/audit.service';
 import { StorageService } from '../files/storage.service';
 import { env } from '../../config/env';
+import { ApplicationsService } from './applications.service';
+import { studentScope } from '../../common/utils/scope';
 
 export interface PackageItemDto {
   fileId: string;
@@ -29,10 +32,17 @@ export interface SubmitPackageDto {
 /** 材料包：后端按命名规范字典生成 zip（学生下载与服务端留档同一份），命名报告随包留痕 */
 @Injectable()
 export class PackagesService {
-  constructor(private prisma: PrismaService, private storage: StorageService, private audit: AuditService) {}
+  private activeZipBuilds = 0;
+  constructor(
+    private prisma: PrismaService,
+    private storage: StorageService,
+    private audit: AuditService,
+    private applications: ApplicationsService,
+  ) {}
 
   /** 提交材料包：校验归属 → 规范打包 → 留档 → 状态 SUBMITTED */
   async submit(user: JwtUser, dto: SubmitPackageDto) {
+    await this.applications.assertApplyOpen(); // 提交通道总开关（服务端强制）
     const student = await this.prisma.student.findUnique({ where: { userId: user.id } });
     if (!student) throw new BadRequestException('仅学生账号可提交材料包');
     const batch = await this.prisma.batch.findUnique({ where: { id: dto.batchId } });
@@ -45,6 +55,7 @@ export class PackagesService {
 
     // 附件归属校验
     const fileIds = dto.items.map((i) => i.fileId);
+    if (new Set(fileIds).size !== fileIds.length) throw new BadRequestException('同一文件不能重复添加到材料包');
     const files = await this.prisma.fileObject.findMany({ where: { id: { in: fileIds } } });
     for (const id of fileIds) {
       const f = files.find((x) => x.id === id);
@@ -124,11 +135,11 @@ export class PackagesService {
     });
   }
 
-  /** 材料包列表（班委本班 / 辅导员 / 超管） */
+  /** 材料包列表（班委本班 / 管理员 / 超管） */
   async list(user: JwtUser, query: { batchId: string; section?: string; status?: string; classId?: string; page?: number; pageSize?: number }) {
     const where: any = { batchId: query.batchId };
-    if (user.classId && !query.classId) where.student = { classId: user.classId };
-    else if (query.classId) where.student = { classId: query.classId };
+    const student = studentScope(user, query.classId);
+    if (Object.keys(student).length) where.student = student;
     if (query.section) where.section = query.section;
     if (query.status) where.status = query.status;
     const page = Math.max(1, query.page ?? 1);
@@ -213,30 +224,45 @@ export class PackagesService {
   }
 
   private async buildZip(entries: { entryName: string; source: any }[]): Promise<Buffer> {
+    if (this.activeZipBuilds >= 3) throw new BadRequestException('材料打包繁忙，请稍后重试');
+    this.activeZipBuilds++;
+    try {
+    // 按实际磁盘大小累加，避免伪造元数据或重复引用导致内存膨胀。
+    let inputBytes = 0;
+    const paths = entries.map((e) => {
+      const abs = this.storage.absPath(e.source.storedPath);
+      let size: number;
+      try { size = fs.statSync(abs).size; }
+      catch { throw new BadRequestException(`源文件已丢失：${e.source.originalName}`); }
+      inputBytes += size;
+      if (inputBytes > env.maxUploadBytes) throw new BadRequestException('材料总大小超过限制，请压缩图片后重试');
+      return abs;
+    });
     const chunks: Buffer[] = [];
+    let outputBytes = 0;
     const sink = new Writable({
       write(chunk, _enc, cb) {
+        outputBytes += chunk.length;
+        if (outputBytes > env.maxUploadBytes) return cb(new BadRequestException('打包后超过大小限制，请压缩图片后重试'));
         chunks.push(chunk);
         cb();
       },
     });
     const zip = archiver('zip', { zlib: { level: 6 } });
-    const done = new Promise<void>((resolve, reject) => {
-      sink.on('finish', () => resolve());
-      sink.on('error', reject);
-      zip.on('error', reject);
-    });
-    zip.pipe(sink);
-    for (const e of entries) {
-      const abs = this.storage.absPath(e.source.storedPath);
-      if (!fs.existsSync(abs)) throw new BadRequestException(`源文件已丢失：${e.source.originalName}`);
-      zip.append(fs.createReadStream(abs), { name: e.entryName });
+    zip.on('warning', (error) => zip.destroy(error));
+    const done = pipeline(zip, sink);
+    try {
+      for (let i = 0; i < entries.length; i++) zip.file(paths[i], { name: entries[i].entryName });
+      await Promise.all([done, zip.finalize()]);
+      return Buffer.concat(chunks, outputBytes);
+    } catch (error) {
+      zip.abort();
+      sink.destroy();
+      throw error;
     }
-    await zip.finalize();
-    await done;
-    const buffer = Buffer.concat(chunks);
-    if (buffer.length > env.maxUploadBytes) throw new BadRequestException('打包后超过大小限制，请压缩图片后重试');
-    return buffer;
+    } finally {
+      this.activeZipBuilds--;
+    }
   }
 }
 

@@ -18,12 +18,13 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     sourcemap: false,
-    // antd/react 等第三方拆独立 chunk：业务迭代时 vendor 命中缓存
+    // react 运行时单独成块（几乎不变，长期命中缓存）。
+    // antd 不再强制打成一个整包：交给 Rollup 按页面实际用到的组件分摊到各懒加载 chunk，
+    // 登录页 / 学生端不再为管理端的 Table、Upload、DatePicker 等付下载与解析成本。
     rollupOptions: {
       output: {
         manualChunks: {
           react: ['react', 'react-dom', 'react-router-dom'],
-          antd: ['antd', '@ant-design/icons'],
         },
       },
     },

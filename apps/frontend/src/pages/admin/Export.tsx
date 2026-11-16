@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { App, Button, Card, Radio, Select, Space, Table, Tag, Typography } from 'antd';
-import { DownloadOutlined, FileExcelOutlined, ReloadOutlined } from '@ant-design/icons';
+import { DownloadOutlined, FileExcelOutlined, FileZipOutlined, ReloadOutlined } from '@ant-design/icons';
 import { ClassInfo, createExport, downloadFile, fetchClasses, fetchExportHistory } from '../../api';
 import { errMsg } from '../../api/client';
 import { BatchSelect, fmtTime } from '../../components/common';
@@ -11,7 +11,7 @@ export default function ExportCenter() {
   const { message } = App.useApp();
   const [batchId, setBatchId] = useState('');
   const [classes, setClasses] = useState<ClassInfo[]>([]);
-  const [scope, setScope] = useState<'CLASS' | 'GRADE' | 'ACADEMIC'>('GRADE');
+  const [scope, setScope] = useState<'CLASS' | 'GRADE' | 'ACADEMIC' | 'MATERIALS'>('GRADE');
   const [classId, setClassId] = useState<string>();
   const [jobId, setJobId] = useState('');
   const [history, setHistory] = useState<any[]>([]);
@@ -33,6 +33,9 @@ export default function ExportCenter() {
     if (!batchId || (scope === 'CLASS' && !classId)) {
       message.warning(scope === 'CLASS' ? '请选择班级' : '请选择批次');
       return;
+    }
+    if (scope === 'MATERIALS') {
+      message.info('开始打包：每生一个规范命名压缩包，再汇总为一个总包（人数多时耗时较长）');
     }
     setLoading(true);
     try {
@@ -63,18 +66,26 @@ export default function ExportCenter() {
               <Radio.Button value="GRADE">全年级</Radio.Button>
               <Radio.Button value="CLASS">按班级</Radio.Button>
               <Radio.Button value="ACADEMIC">学业分</Radio.Button>
+              <Radio.Button value="MATERIALS">加分材料</Radio.Button>
             </Radio.Group>
-            {scope === 'CLASS' && (
+            {(scope === 'CLASS' || scope === 'MATERIALS') && (
               <Select
-                placeholder="选择班级"
+                placeholder="选择班级（可选）"
                 showSearch
+                allowClear
                 style={{ width: 200 }}
                 value={classId}
                 onChange={setClassId}
                 options={classes.map((c) => ({ value: c.id, label: c.name }))}
               />
             )}
-            <Button type="primary" icon={<FileExcelOutlined />} loading={loading} disabled={!batchId} onClick={doExport}>
+            <Button
+              type="primary"
+              icon={scope === 'MATERIALS' ? <FileZipOutlined /> : <FileExcelOutlined />}
+              loading={loading}
+              disabled={!batchId}
+              onClick={doExport}
+            >
               生成导出文件
             </Button>
           </Space>
@@ -86,7 +97,11 @@ export default function ExportCenter() {
               jobId={jobId}
               onDone={(j) => {
                 const s = j.summary ?? {};
-                message.success(`导出完成：${s.students} 人 · ${s.classes} 班 · v${s.version}${s.published ? '' : '（候选版）'}`);
+                message.success(
+                  scope === 'MATERIALS'
+                    ? `打包完成：${s.students} 人 · ${s.files} 份佐证材料`
+                    : `导出完成：${s.students} 人 · ${s.classes} 班 · v${s.version}${s.published ? '' : '（候选版）'}`,
+                );
                 load();
               }}
             />

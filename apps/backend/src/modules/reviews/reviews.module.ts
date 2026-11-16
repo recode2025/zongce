@@ -4,6 +4,7 @@ import { PrismaService } from '../../prisma/prisma.module';
 import { AuditService } from '../audit/audit.service';
 import { CurrentUser, JwtUser, Roles } from '../../common/decorators';
 import { sendNotification } from '../notify/notify.module';
+import { studentScope } from '../../common/utils/scope';
 
 interface FirstReviewDto {
   ids: string[];
@@ -20,21 +21,22 @@ interface SecondReviewDto {
 }
 
 /**
- * 审核流：班委初审（材料齐备性/命名规范）→ 辅导员复审（分值核定）。
+ * 审核流：班委初审（材料齐备性/命名规范）→ 管理员复审（分值核定）。
  * grantedScore 只在复审写入，是计算引擎唯一取分来源；每次动作落 ReviewLog + 通知学生。
  */
 @Controller('reviews')
 export class ReviewsController {
   constructor(private prisma: PrismaService, private audit: AuditService) {}
 
-  // ---------- 初审（班委本班；辅导员可代初） ----------
+  // ---------- 初审（班委本班；管理员可代初） ----------
 
   @Post('first')
   @Roles(Role.CLASS_LEADER, Role.GRADE_ADMIN, Role.SUPER_ADMIN)
   async firstReview(@Body() dto: FirstReviewDto, @CurrentUser() user: JwtUser) {
     if (!dto?.ids?.length || dto.ids.length > 100) throw new BadRequestException('请选择 1-100 条申请');
+    const scope = studentScope(user);
     const apps = await this.prisma.application.findMany({
-      where: { id: { in: dto.ids }, status: AppStatus.SUBMITTED },
+      where: { id: { in: dto.ids }, status: AppStatus.SUBMITTED, ...(Object.keys(scope).length ? { student: scope } : {}) },
       include: { student: { select: { id: true, classId: true, userId: true, name: true } } },
     });
     // 数据范围：班委仅本班
@@ -80,7 +82,7 @@ export class ReviewsController {
           a.student.userId,
           dto.action === 'PASS' ? '加分申请初审通过' : '加分申请被初审退回',
           dto.action === 'PASS'
-            ? `「${a.title}」已通过班级初审，等待辅导员复审。`
+            ? `「${a.title}」已通过班级初审，等待管理员复审。`
             : `「${a.title}」被初审退回：${dto.comment ?? '材料不符合规范'}。请修改后重新提交。`,
           '/student/applications',
         );
@@ -95,14 +97,15 @@ export class ReviewsController {
     return { processed: apps.length, status: toStatus };
   }
 
-  // ---------- 复审（辅导员/超管，核定 grantedScore） ----------
+  // ---------- 复审（管理员/超管，核定 grantedScore） ----------
 
   @Post('second')
   @Roles(Role.GRADE_ADMIN, Role.SUPER_ADMIN)
   async secondReview(@Body() dto: SecondReviewDto, @CurrentUser() user: JwtUser) {
     if (!dto?.ids?.length || dto.ids.length > 100) throw new BadRequestException('请选择 1-100 条申请');
+    const scope = studentScope(user);
     const apps = await this.prisma.application.findMany({
-      where: { id: { in: dto.ids }, status: AppStatus.FIRST_PASSED },
+      where: { id: { in: dto.ids }, status: AppStatus.FIRST_PASSED, ...(Object.keys(scope).length ? { student: scope } : {}) },
       include: {
         student: { select: { userId: true } },
         ruleItem: { select: { code: true, name: true, caps: true } },
@@ -178,8 +181,9 @@ export class ReviewsController {
   @Roles(Role.CLASS_LEADER, Role.GRADE_ADMIN, Role.SUPER_ADMIN)
   async packageFirst(@Body() dto: { ids: string[]; action: 'PASS' | 'REJECT'; comment?: string }, @CurrentUser() user: JwtUser) {
     if (!dto?.ids?.length || dto.ids.length > 100) throw new BadRequestException('请选择 1-100 个材料包');
+    const scope = studentScope(user);
     const pkgs = await this.prisma.materialPackage.findMany({
-      where: { id: { in: dto.ids }, status: PackageStatus.SUBMITTED },
+      where: { id: { in: dto.ids }, status: PackageStatus.SUBMITTED, ...(Object.keys(scope).length ? { student: scope } : {}) },
       include: { student: { select: { id: true, classId: true, userId: true } } },
     });
     if (user.role === Role.CLASS_LEADER) {
@@ -228,15 +232,16 @@ export class ReviewsController {
   @Roles(Role.CLASS_LEADER, Role.GRADE_ADMIN, Role.SUPER_ADMIN)
   async stats(@CurrentUser() user: JwtUser, @Query('batchId') batchId: string) {
     if (!batchId) throw new BadRequestException('缺少 batchId');
-    const scope = user.role === Role.CLASS_LEADER && user.classId ? { classId: user.classId } : {};
+    const scope = studentScope(user);
+    const studentFilter = Object.keys(scope).length ? { student: scope } : {};
     const group = await this.prisma.application.groupBy({
       by: ['status'],
-      where: { batchId, ...scope },
+      where: { batchId, ...studentFilter },
       _count: { _all: true },
     });
     const pkgGroup = await this.prisma.materialPackage.groupBy({
       by: ['status'],
-      where: { batchId, ...(user.role === Role.CLASS_LEADER && user.classId ? { student: { classId: user.classId } } : {}) },
+      where: { batchId, ...studentFilter },
       _count: { _all: true },
     });
     return {

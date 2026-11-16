@@ -8,6 +8,8 @@ import { env } from './config/env';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, { cors: false });
+  // 只有明确部署在可信代理后、后端端口未直接暴露时才启用。
+  app.getHttpAdapter().getInstance().set('trust proxy', env.trustProxy);
   app.setGlobalPrefix('api/v1');
 
   app.use(

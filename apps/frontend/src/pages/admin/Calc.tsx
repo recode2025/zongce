@@ -1,15 +1,17 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Alert, App, Button, Card, Drawer, Input, Modal, Select, Space, Table, Tag, Typography } from 'antd';
+import { Alert, App, Button, Card, Drawer, Empty, Input, Modal, Select, Space, Table, Tag, Typography } from 'antd';
 import { ExperimentOutlined, FileExcelOutlined, ReloadOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { ClassInfo, createExport, downloadFile, fetchCalcDetail, fetchCalcResults, fetchCalcVersions, fetchClasses, runCalc } from '../../api';
 import { errMsg } from '../../api/client';
 import { BatchSelect, FlagTag, fmtTime } from '../../components/common';
 import JobProgress from '../../components/JobProgress';
 import ScoreBreakdown from '../../components/ScoreBreakdown';
+import { useAuth } from '../../store/auth';
 
 /** 计算引擎：试算（dryRun 差异报告不落版）/ 正式计算（版本化）/ 结果预览（breakdown 可解释） */
 export default function Calc() {
   const { message, modal } = App.useApp();
+  const canCalculate = useAuth().user?.role === 'SUPER_ADMIN';
   const [batchId, setBatchId] = useState('');
   const [classes, setClasses] = useState<ClassInfo[]>([]);
   const [versions, setVersions] = useState<any[]>([]);
@@ -81,12 +83,12 @@ export default function Calc() {
       <Card size="small">
         <Space wrap>
           <BatchSelect value={batchId} onChange={(v) => { setBatchId(v); setVersion(undefined); }} />
-          <Button icon={<ExperimentOutlined />} disabled={!batchId} onClick={() => doRun(true)}>
+          {canCalculate && <Button icon={<ExperimentOutlined />} disabled={!batchId} onClick={() => doRun(true)}>
             试算（差异报告）
-          </Button>
-          <Button type="primary" icon={<ThunderboltOutlined />} disabled={!batchId} onClick={() => doRun(false)}>
+          </Button>}
+          {canCalculate && <Button type="primary" icon={<ThunderboltOutlined />} disabled={!batchId} onClick={() => doRun(false)}>
             正式计算
-          </Button>
+          </Button>}
           <Button icon={<FileExcelOutlined />} disabled={!batchId} onClick={doExportAcademic}>
             导出学业分
           </Button>
@@ -150,12 +152,14 @@ export default function Calc() {
             onSearch={(v) => { setQ(v); setPage(1); }}
           />
         </Space>
-        {!version && versions.length === 0 && <Alert type="info" showIcon message="尚未计算，点击「试算」或「正式计算」开始" />}
         <Table
           size="small"
           rowKey="id"
           loading={loading}
           dataSource={rows}
+          locale={!version && versions.length === 0 ? {
+            emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={canCalculate ? '尚未计算，点击「试算」或「正式计算」开始' : '当前年级暂无计算结果，计算由超级管理员发起'} />,
+          } : undefined}
           pagination={{ current: page, pageSize: 50, total, onChange: setPage, showSizeChanger: false, size: 'default' }}
           scroll={{ x: 'max-content' }}
           columns={[

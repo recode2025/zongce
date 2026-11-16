@@ -1,4 +1,4 @@
-import { BadRequestException, Controller, Get, Module, Param, Post, Query, Res, StreamableFile, UploadedFile, UseInterceptors } from '@nestjs/common';
+import { BadRequestException, Controller, Get, Logger, Module, Param, Post, Query, Res, StreamableFile, UploadedFile, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Response } from 'express';
 import * as fs from 'node:fs';
@@ -9,6 +9,7 @@ import { CurrentUser, JwtUser, Roles } from '../../common/decorators';
 import { StorageService } from './storage.service';
 import { ZipService } from './zip.service';
 import { env } from '../../config/env';
+import { studentScope } from '../../common/utils/scope';
 
 const UPLOAD_LIMITS = { fileSize: env.maxUploadBytes };
 
@@ -23,7 +24,7 @@ export class FilesController {
 
   /** 单文件上传（学生端向导附件 / 材料扫描件） */
   @Post('upload')
-  @Roles(Role.STUDENT, Role.GRADE_ADMIN)
+  @Roles(Role.STUDENT, Role.CLASS_LEADER, Role.GRADE_ADMIN)
   @UseInterceptors(FileInterceptor('file', { limits: UPLOAD_LIMITS }))
   async upload(@UploadedFile() file: Express.Multer.File, @CurrentUser() user: JwtUser, @Query('kind') kind?: string) {
     if (!file) throw new BadRequestException('缺少文件');
@@ -38,7 +39,16 @@ export class FilesController {
     // zip 上传后立即建目录树（同时完成炸弹预检）
     let zipTree: unknown = null;
     if (saved.ext === 'zip') {
-      zipTree = await this.zip.indexZip(saved.id);
+      try {
+        zipTree = await this.zip.indexZip(saved.id);
+      } catch (error) {
+        try {
+          await this.storage.discardUpload(saved.id);
+        } catch (cleanupError) {
+          Logger.error(`清理无效上传失败: ${saved.id}`, cleanupError instanceof Error ? cleanupError.stack : String(cleanupError), 'FilesController');
+        }
+        throw error;
+      }
     }
     await this.audit.log({ operatorId: user.id, action: 'FILE_UPLOAD', resourceType: 'file', resourceId: saved.id, detail: { ext: saved.ext, size: saved.size } });
     return { ...saved, zipTree };
@@ -87,19 +97,20 @@ export class FilesController {
     return new StreamableFile(fs.createReadStream(absPath));
   }
 
-  /** 访问控制：超管/辅导员全量；班委限本班；学生仅本人（经上传者/申请/材料包三路归属判定） */
+  /** 访问控制：超管全量，管理员和班委仅可访问其范围内的材料。 */
   private async assertAccess(user: JwtUser, uploaderId: string | null, fileObjectId: string) {
-    if (user.role === Role.SUPER_ADMIN || user.role === Role.GRADE_ADMIN) return;
+    if (user.role === Role.SUPER_ADMIN) return;
+    const scope = user.role === Role.GRADE_ADMIN || user.role === Role.CLASS_LEADER ? studentScope(user) : null;
     if (uploaderId && uploaderId === user.id) return;
 
-    if (user.role === Role.CLASS_LEADER && user.classId) {
-      // 经申请附件或材料包判定归属班级
-      const [app, pkg] = await Promise.all([
-        this.prisma.applicationAttachment.findFirst({ where: { fileId: fileObjectId }, include: { application: { select: { classId: true } } } }),
-        this.prisma.materialPackage.findFirst({ where: { zipFileId: fileObjectId }, include: { student: { select: { classId: true } } } }),
+    if (scope) {
+      // 上传者所属学生、申请附件或材料包均可证明材料属于授权范围。
+      const [owner, app, pkg] = await Promise.all([
+        uploaderId ? this.prisma.student.findFirst({ where: { userId: uploaderId, ...scope }, select: { id: true } }) : null,
+        this.prisma.applicationAttachment.findFirst({ where: { fileId: fileObjectId, application: { student: scope } }, select: { id: true } }),
+        this.prisma.materialPackage.findFirst({ where: { zipFileId: fileObjectId, student: scope }, select: { id: true } }),
       ]);
-      const classId = app?.application.classId ?? pkg?.student.classId;
-      if (classId === user.classId) return;
+      if (owner || app || pkg) return;
       // zip 派生文件：查父 zip 的归属
       const derived = await this.prisma.fileObject.findFirst({ where: { id: fileObjectId, parentZipId: { not: null } } });
       if (derived?.parentZipId) {

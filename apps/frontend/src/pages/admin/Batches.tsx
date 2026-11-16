@@ -5,10 +5,12 @@ import { BATCH_STATUS_FLOW, BATCH_STATUS_LABEL } from '@zc/shared';
 import { activateRulesSnapshot, createBatch, fetchBatches, transitionBatch } from '../../api';
 import { errMsg } from '../../api/client';
 import { BatchStatusTag, fmtTime } from '../../components/common';
+import { useAuth } from '../../store/auth';
 
 /** 批次管理：创建 / 激活规则快照 / 阶段流转（门禁校验在服务端） */
 export default function Batches() {
   const { message, modal } = App.useApp();
+  const canManage = useAuth().user?.role === 'SUPER_ADMIN';
   const [rows, setRows] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
@@ -47,9 +49,9 @@ export default function Batches() {
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
       <Card size="small">
         <Space>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
+          {canManage && <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
             新建批次
-          </Button>
+          </Button>}
           <Button icon={<ReloadOutlined />} onClick={load}>
             刷新
           </Button>
@@ -90,6 +92,7 @@ export default function Batches() {
               width: 250,
               render: (_, r: any) => {
                 const next = nextOf(r.status);
+                if (!canManage) return <Typography.Text type="secondary">仅超管可管理</Typography.Text>;
                 return (
                   <Space size={4}>
                     <Popconfirm

@@ -2,7 +2,7 @@
 
 export enum Role {
   SUPER_ADMIN = 'SUPER_ADMIN',   // 超级管理员
-  GRADE_ADMIN = 'GRADE_ADMIN',   // 辅导员 / 年级管理员
+  GRADE_ADMIN = 'GRADE_ADMIN',   // 年级管理员
   CLASS_LEADER = 'CLASS_LEADER', // 班级负责人（班委）
   STUDENT = 'STUDENT',           // 学生
 }
@@ -25,7 +25,7 @@ export enum BatchStatus {
   DATA_PREP = 'DATA_PREP',                 // 数据准备（导入学生/成绩）
   COLLECTING = 'COLLECTING',               // 材料收集中
   FIRST_REVIEW = 'FIRST_REVIEW',           // 班级初审
-  SECOND_REVIEW = 'SECOND_REVIEW',         // 辅导员复审
+  SECOND_REVIEW = 'SECOND_REVIEW',         // 管理员复审
   CALCULATED = 'CALCULATED',               // 已计算
   PUBLICITY = 'PUBLICITY',                 // 公示期
   ARCHIVED = 'ARCHIVED',                   // 归档
@@ -47,7 +47,7 @@ export const BATCH_STATUS_LABEL: Record<BatchStatus, string> = {
   DATA_PREP: '数据准备',
   COLLECTING: '材料收集',
   FIRST_REVIEW: '班级初审',
-  SECOND_REVIEW: '辅导员复审',
+  SECOND_REVIEW: '复审',
   CALCULATED: '已计算',
   PUBLICITY: '公示期',
   ARCHIVED: '已归档',
@@ -58,6 +58,17 @@ export enum RuleCategory {
   ACADEMIC = 'ACADEMIC',   // 学业表现
   SPORTS = 'SPORTS',       // 文体表现
 }
+
+/** RuleItem.applyType：申报方式 */
+export enum ApplyType {
+  SELF = 'SELF',           // 学生自主申报（走初审/复审）
+  UNIFIED = 'UNIFIED',     // 统一加分（学院按名单导入学号→分值，学生不可申报）
+}
+
+export const APPLY_TYPE_LABEL: Record<ApplyType, string> = {
+  SELF: '自主申报',
+  UNIFIED: '统一加分',
+};
 
 export enum WhitelistType {
   COMP_A = 'COMP_A',                       // A 类竞赛（国家级）
@@ -208,3 +219,28 @@ export const COURSE_ATTRS = {
   PUBLIC: '公选',
   FREE: '任选',
 } as const;
+
+/** 奖学金奖项（按等级从高到低；每人每学年一项） */
+export enum ScholarshipAward {
+  NATIONAL = 'NATIONAL',
+  NATIONAL_ENCOURAGE = 'NATIONAL_ENCOURAGE',
+  SCHOOL_1 = 'SCHOOL_1',
+  SCHOOL_2 = 'SCHOOL_2',
+  SCHOOL_3 = 'SCHOOL_3',
+}
+
+export const SCHOLARSHIP_AWARD_LABEL: Record<ScholarshipAward, string> = {
+  NATIONAL: '国家奖学金',
+  NATIONAL_ENCOURAGE: '国家励志奖学金',
+  SCHOOL_1: '校一等奖学金',
+  SCHOOL_2: '校二等奖学金',
+  SCHOOL_3: '校三等奖学金',
+};
+
+export const SCHOLARSHIP_AWARD_ORDER: ScholarshipAward[] = [
+  ScholarshipAward.NATIONAL,
+  ScholarshipAward.NATIONAL_ENCOURAGE,
+  ScholarshipAward.SCHOOL_1,
+  ScholarshipAward.SCHOOL_2,
+  ScholarshipAward.SCHOOL_3,
+];

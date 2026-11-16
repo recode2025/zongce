@@ -1,4 +1,5 @@
 import axios, { AxiosError, AxiosRequestConfig } from 'axios';
+import { publicErrorText } from '@zc/shared';
 
 /**
  * API 客户端：access token 仅存内存（刷新页即失效，走 httpOnly refresh cookie 续期）。
@@ -10,6 +11,10 @@ let accessToken = '';
 export const setAccessToken = (t: string) => (accessToken = t);
 export const hasToken = () => !!accessToken;
 
+// CAS 跳转登录带回的 refresh token（仅内存；优先走 httpOnly cookie，此值作兜底）
+let refreshTokenMem = '';
+export const setRefreshToken = (t: string) => (refreshTokenMem = t ?? '');
+
 http.interceptors.request.use((cfg) => {
   if (accessToken) cfg.headers.Authorization = `Bearer ${accessToken}`;
   return cfg;
@@ -17,12 +22,13 @@ http.interceptors.request.use((cfg) => {
 
 let refreshing: Promise<string | null> | null = null;
 
-async function refreshAccessToken(): Promise<string | null> {
+export async function refreshAccessToken(): Promise<string | null> {
   refreshing ??= axios
-    .post('/api/v1/auth/refresh', {}, { timeout: 10_000 })
+    .post('/api/v1/auth/refresh', refreshTokenMem ? { refreshToken: refreshTokenMem } : {}, { timeout: 10_000 })
     .then((r) => {
       const t: string | undefined = r.data?.accessToken;
       if (t) setAccessToken(t);
+      if (r.data?.refreshToken) setRefreshToken(r.data.refreshToken);
       return t ?? null;
     })
     .catch(() => null)
@@ -54,11 +60,11 @@ http.interceptors.response.use(
 export function errMsg(e: unknown): string {
   if (axios.isAxiosError(e)) {
     const d = e.response?.data as any;
-    if (typeof d?.message === 'string') return d.message;
-    if (Array.isArray(d?.message) && d.message[0]) return String(d.message[0]);
-    return e.message === 'Network Error' ? '网络连接失败' : e.message;
+    if (typeof d?.message === 'string' || Array.isArray(d?.message)) return publicErrorText(d.message);
+    if (e.message === 'Network Error') return '网络连接失败';
+    return publicErrorText(undefined);
   }
-  return e instanceof Error ? e.message : String(e);
+  return publicErrorText(e instanceof Error ? e.message : e);
 }
 
 /** 列表响应形状归一：{rows}|{items}|数组 → 数组 */
@@ -69,8 +75,21 @@ export function asArray<T = any>(res: any): T[] {
   return [];
 }
 
-/** GET/POST/PATCH 快捷封装（解包 axios 响应，直接返回 data） */
-export const get = <T = any>(url: string, params?: any) => http.get(url, { params }).then((r) => r.data as T);
+/** GET 在途去重：同一 url+params 的并发请求共享同一 Promise。
+ *  StrictMode 双挂载、多组件同帧取同一字典（active 批次 / 规则项等）只发一次网络请求；
+ *  请求落地即出表、不缓存结果，之后的调用仍取最新数据（无陈旧值问题）。 */
+const inflightGets = new Map<string, Promise<any>>();
+export const get = <T = any>(url: string, params?: any): Promise<T> => {
+  const key = url + '?' + JSON.stringify(params ?? null);
+  const hit = inflightGets.get(key);
+  if (hit) return hit as Promise<T>;
+  const p = http
+    .get(url, { params })
+    .then((r) => r.data as T)
+    .finally(() => inflightGets.delete(key));
+  inflightGets.set(key, p);
+  return p;
+};
 export const post = <T = any>(url: string, body?: any) => http.post(url, body).then((r) => r.data as T);
 export const patch = <T = any>(url: string, body?: any) => http.patch(url, body).then((r) => r.data as T);
 

@@ -1,5 +1,6 @@
-import { BadRequestException, Body, Controller, Get, Param, Post, Query, UploadedFile, UseInterceptors } from '@nestjs/common';
+import { BadRequestException, Body, Controller, ForbiddenException, Get, Param, Post, Query, Res, UploadedFile, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { Response } from 'express';
 import { IsArray, IsObject, IsOptional, IsString } from 'class-validator';
 import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
@@ -8,13 +9,16 @@ import { ColumnMappingEntry, Role } from '@zc/shared';
 import { PrismaService } from '../../prisma/prisma.module';
 import { JobService } from '../../queue/job.service';
 import { AuditService } from '../audit/audit.service';
-import { ClientIp, CurrentUser, Roles } from '../../common/decorators';
+import { ClientIp, CurrentUser, JwtUser, Roles } from '../../common/decorators';
+import { studentScope } from '../../common/utils/scope';
 import { GRADE_ALIASES, GRADE_TARGETS, STUDENT_ALIASES, STUDENT_TARGETS, suggestMapping } from './column-matcher';
 import { parseWorkbook } from './sheet-parser';
+import { TemplateKind, buildImportTemplate } from './templates';
 import { StudentsImportService } from './students-import.service';
 import { GradesImportService } from '../grades/grades-import.service';
 import { RegistrationImportService } from './registration-import.service';
 import { env } from '../../config/env';
+import { publicJob } from '../../common/utils/public-error';
 
 class ConfirmDto {
   @IsString() token: string;
@@ -37,6 +41,20 @@ export class ImportsController {
     private gradesImport: GradesImportService,
     private registrationImport: RegistrationImportService,
   ) {}
+
+  /**
+   * 导入模板下载：GRADE 成绩 / STUDENT 学生名册 / REGISTRATION 综测登记表。
+   * 数据表只含表头（不放示例行，防止示例学号与真实学生重号被误导入）；说明与示例在「填写说明」表。
+   */
+  @Get('template')
+  @Roles(Role.GRADE_ADMIN)
+  template(@Query('kind') kind: TemplateKind, @Res() res: Response) {
+    if (!['GRADE', 'STUDENT', 'REGISTRATION'].includes(kind)) throw new BadRequestException('kind 只能是 GRADE、STUDENT 或 REGISTRATION');
+    const { buffer, fileName } = buildImportTemplate(kind);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`);
+    res.send(buffer);
+  }
 
   /** 阶段一：上传解析 + 列映射建议（不写库） */
   @Post('preview')
@@ -72,7 +90,7 @@ export class ImportsController {
 
   /** 阶段二：确认映射，启动导入任务 */
   @Post('confirm')
-  @Roles(Role.GRADE_ADMIN)
+  @Roles(Role.SUPER_ADMIN)
   async confirm(@Body() dto: ConfirmDto, @CurrentUser('id') operatorId: string, @ClientIp() ip: string) {
     if (!UUID_RE.test(dto.token)) throw new BadRequestException('无效的导入令牌');
     const filePath = path.join(env.tmpDir, 'imports', dto.token);
@@ -106,7 +124,7 @@ export class ImportsController {
 
   /** 综测登记表导入（班级官方模板，固定格式）：表3-表11 逐行转加分申请（SUBMITTED，走初审/复审） */
   @Post('registration')
-  @Roles(Role.GRADE_ADMIN, Role.SUPER_ADMIN)
+  @Roles(Role.SUPER_ADMIN)
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 50 * 1024 * 1024 } }))
   async registration(@UploadedFile() file: Express.Multer.File, @Query('batchId') batchId: string, @CurrentUser('id') operatorId: string, @ClientIp() ip: string) {
     if (!file) throw new BadRequestException('缺少文件');
@@ -135,19 +153,23 @@ export class ImportsController {
 
   @Get('jobs/:id')
   @Roles(Role.GRADE_ADMIN)
-  async job(@Param('id') id: string) {
+  async job(@Param('id') id: string, @CurrentUser() user: JwtUser) {
+    studentScope(user);
     const job = await this.prisma.importJob.findUnique({ where: { id } });
     if (!job) throw new BadRequestException('任务不存在');
-    return job;
+    if (user.role !== Role.SUPER_ADMIN && job.operatorId !== user.id) throw new ForbiddenException('无权查看该任务');
+    return publicJob(job);
   }
 
   @Get('jobs')
   @Roles(Role.GRADE_ADMIN)
-  async listJobs(@Query('kind') kind?: string, @Query('batchId') batchId?: string) {
-    return this.prisma.importJob.findMany({
-      where: { kind, batchId: batchId ?? undefined },
+  async listJobs(@Query('kind') kind: string | undefined, @Query('batchId') batchId: string | undefined, @CurrentUser() user: JwtUser) {
+    studentScope(user);
+    const jobs = await this.prisma.importJob.findMany({
+      where: { kind, batchId: batchId ?? undefined, ...(user.role === Role.GRADE_ADMIN ? { operatorId: user.id } : {}) },
       orderBy: { createdAt: 'desc' },
       take: 20,
     });
+    return jobs.map(publicJob);
   }
 }

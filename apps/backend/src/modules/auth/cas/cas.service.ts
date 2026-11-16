@@ -24,6 +24,8 @@ export interface CasUserInfo {
   unit_name: string;
   id_number: string;
   id_type: string;
+  /** 认证主体 <sso:user>（学生登录输入的学号；user_id 属性是 12 位人员编号，两者不同；可能为空串） */
+  principal: string;
   [key: string]: string;
 }
 
@@ -51,6 +53,11 @@ function xmlDecode(s: string): string {
     .replace(/&#x2F;/gi, '/')
     .replace(/&#(\d+);/g, (_, d) => String.fromCharCode(Number(d)))
     .replace(/&amp;/g, '&');
+}
+
+/** 认证主体 <sso:user>（学生登录所用的账号，即学号；与 user_id 属性的 12 位人员编号不同） */
+function extractPrincipal(xml: string): string {
+  return /<sso:user>\s*([^<]*?)\s*<\/sso:user>/.exec(xml)?.[1] ?? '';
 }
 
 /** 解析 proxyValidate 返回的 sso:attribute 列表（简单 XML，正则即可，免引 xml2js） */
@@ -132,6 +139,7 @@ export class CasService {
       throw new UnauthorizedException('CAS 票据校验未通过，请重试');
     }
     const userInfo = parseCasAttributes(xml);
+    userInfo.principal = extractPrincipal(xml);
     const missing = ['user_id', 'user_name', 'unit_name', 'id_number', 'id_type'].filter((k) => !userInfo[k]);
     if (missing.length) {
       // 带上实际收到的字段与原始 XML 片段，便于定位学校侧返回格式变化
@@ -141,5 +149,32 @@ export class CasService {
     }
 
     return { cookie: cookiePairs(postCookies), userInfo };
+  }
+
+  /**
+   * 跳转式 CAS：校验浏览器回跳带回的 ticket（/cas/proxyValidate）。
+   * service 必须与发起跳转时传给 CAS 的字符串完全一致（由调用方从缓存取回，避免重构漂移）。
+   */
+  async validateTicket(ticket: string, serviceUrl: string): Promise<CasUserInfo> {
+    const validateRes = await casFetch(`${env.casBase}/proxyValidate`, {
+      method: 'POST',
+      headers: REQUEST_HEADERS,
+      body: new URLSearchParams({ service: serviceUrl, ticket }).toString(),
+    });
+    const xml = await validateRes.text();
+    if (!xml.includes('sso:authenticationSuccess')) {
+      throw new UnauthorizedException('学校统一认证未通过（ticket 无效或已过期），请重新登录');
+    }
+    const userInfo = parseCasAttributes(xml);
+    userInfo.principal = extractPrincipal(xml);
+    const missing = ['user_id', 'user_name', 'unit_name', 'id_number', 'id_type'].filter((k) => !userInfo[k]);
+    if (missing.length) {
+      const got = Object.keys(userInfo).join(',') || '（无）';
+      console.error(`[cas] proxyValidate(ticket) 缺字段 ${missing.join(',')}，实际收到: ${got}\n${xml.slice(0, 2000)}`);
+      throw new UnauthorizedException(`学校认证返回信息不完整（缺 ${missing.join('、')}，收到: ${got}）`);
+    }
+    // 诊断日志：只记属性名与账号标识，不落身份证等敏感值
+    console.log(`[cas] ticket 校验通过: principal=${userInfo.principal || '（空）'} user_id=${userInfo.user_id} 属性=[${Object.keys(userInfo).filter((k) => k !== 'principal').join(',')}]`);
+    return userInfo;
   }
 }

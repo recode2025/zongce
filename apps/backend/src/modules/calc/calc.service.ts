@@ -1,10 +1,11 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
-import { AppStatus, BatchStatus, IssueResolution } from '@zc/shared';
+import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
+import { AppStatus, BatchStatus, IssueResolution, Role } from '@zc/shared';
 import { PrismaService } from '../../prisma/prisma.module';
 import { JobService, JobContext } from '../../queue/job.service';
 import { AuditService } from '../audit/audit.service';
 import { JwtUser } from '../../common/decorators';
 import { computeStudent, rankAll, EngineCourse, EngineApplication, EngineOptions, DEFAULT_ENGINE_OPTIONS, EngineResult } from './engine';
+import { studentScope } from '../../common/utils/scope';
 
 export const ENGINE_VERSION = '1.0.0';
 
@@ -14,6 +15,8 @@ export class CalcService {
   constructor(private prisma: PrismaService, private jobs: JobService, private audit: AuditService) {}
 
   async startRun(user: JwtUser, batchId: string, dryRun: boolean) {
+    // 计算和版本号影响整个批次，目前数据模型没有年级级别的版本边界。
+    if (user.role !== Role.SUPER_ADMIN) throw new ForbiddenException('跨年级计算仅限超级管理员');
     const batch = await this.prisma.batch.findUnique({ where: { id: batchId } });
     if (!batch) throw new BadRequestException('批次不存在');
     if (batch.status === BatchStatus.DRAFT || batch.status === BatchStatus.DATA_PREP) {
@@ -205,8 +208,8 @@ export class CalcService {
   }
 
   /** 版本列表 */
-  async versions(batchId: string) {
-    const group = await this.prisma.calcResult.groupBy({ by: ['version', 'status'], where: { batchId }, _count: { _all: true }, _max: { totalScore: true } });
+  async versions(batchId: string, user: JwtUser) {
+    const group = await this.prisma.calcResult.groupBy({ by: ['version', 'status'], where: { batchId, student: studentScope(user) }, _count: { _all: true }, _max: { totalScore: true } });
     return group.sort((a, b) => b.version - a.version);
   }
 
@@ -214,8 +217,7 @@ export class CalcService {
   async results(user: JwtUser, q: { batchId: string; version?: string; classId?: string; q?: string; page?: number; pageSize?: string }) {
     const version = q.version ? Number(q.version) : undefined;
     const where: any = { batchId: q.batchId, ...(version ? { version } : { status: 'CANDIDATE' }) };
-    const studentWhere: any = {};
-    if (q.classId) studentWhere.classId = q.classId;
+    const studentWhere: any = studentScope(user, q.classId);
     if (q.q) studentWhere.OR = [{ name: { contains: q.q } }, { studentNo: { contains: q.q } }];
     if (Object.keys(studentWhere).length) where.student = studentWhere;
     const page = Math.max(1, q.page ?? 1);

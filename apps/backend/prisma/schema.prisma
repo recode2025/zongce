@@ -70,6 +70,7 @@ model Student {
   results      CalcResult[]
   issues       GradeIssue[]
   objections   Objection[]
+  scholarshipAwards ScholarshipAward[]
 
   @@index([grade, classId])
   @@index([enrollStatus])
@@ -104,6 +105,7 @@ model RuleItem {
   code          String  @unique @db.VarChar(64) // MORAL_BLOOD / ACA_COMPETITION ...
   category      String  @db.VarChar(16) // MORAL / ACADEMIC / SPORTS
   name          String  @db.VarChar(128)
+  applyType     String  @default("SELF") @db.VarChar(16) // SELF 自主申报 / UNIFIED 统一加分（名单导入）
   description   String? @db.Text
   detailSchema  Json    @default("[]") // DetailField[] 学生端动态表单
   defaultScore  Decimal? @db.Decimal(5,2)
@@ -478,4 +480,28 @@ model Notification {
   createdAt DateTime @default(now())
 
   @@index([userId, readAt])
+}
+
+// 系统运行时配置（KV）：如登录密语口令 login.passphrase（后台可改，默认取环境变量）
+model SysConfig {
+  key       String   @id @db.VarChar(64)
+  value     String   @db.VarChar(512)
+  updatedAt DateTime @updatedAt
+}
+
+/// 奖学金评定：按学年（两学期综测总和排名）手动设定奖项；每人每学年一项
+model ScholarshipAward {
+  id           String   @id @default(cuid())
+  academicYear String   @db.VarChar(16) // 2025-2026
+  studentId    String
+  award        String   @db.VarChar(32) // NATIONAL / NATIONAL_ENCOURAGE / SCHOOL_1 / SCHOOL_2 / SCHOOL_3
+  note         String?  @db.VarChar(255)
+  setById      String?
+  setByName    String?  @db.VarChar(64)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  student      Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@unique([academicYear, studentId])
+  @@index([academicYear, award])
 }

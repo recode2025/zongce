@@ -84,6 +84,56 @@ export class CacheService implements OnModuleDestroy {
     return n;
   }
 
+  /** 同时检查并消耗个人与全局每日额度；Redis 脚本保证多实例并发原子性。
+   * 不设置 TTL，避免 volatile-ttl 淘汰导致当日额度回退；值跨日自动重置。 */
+  async consumeDailyQuota(userId: string, userLimit: number, globalLimit: number): Promise<'ok' | 'user' | 'global'> {
+    const globalKey = 'zc:ai-quota:{daily}:global';
+    const usersKey = 'zc:ai-quota:{daily}:users';
+    if (this.redis) {
+      const script = `
+        local day = tostring(math.floor((tonumber(redis.call('TIME')[1]) + 28800) / 86400))
+        local g = redis.call('HMGET', KEYS[1], 'day', 'count')
+        local total = 0
+        if g[1] == day then total = tonumber(g[2]) or 0 end
+        local u = redis.call('HGET', KEYS[2], ARGV[1])
+        local count = 0
+        if u then
+          local d, n = string.match(u, '^(%d+):(%d+)$')
+          if d == day then count = tonumber(n) end
+        end
+        if count >= tonumber(ARGV[2]) then return 1 end
+        if total >= tonumber(ARGV[3]) then return 2 end
+        redis.call('HSET', KEYS[1], 'day', day, 'count', total + 1)
+        redis.call('HSET', KEYS[2], ARGV[1], day .. ':' .. (count + 1))
+        return 0
+      `;
+      const result = Number(await this.redis.eval(script, 2, globalKey, usersKey, userId, userLimit, globalLimit));
+      if (result !== 0 && result !== 1 && result !== 2) throw new Error('Invalid quota result');
+      return result === 1 ? 'user' : result === 2 ? 'global' : 'ok';
+    }
+    throw new Error('Redis is required for AI quota');
+  }
+
+  /** 用 Redis 有序集合原子申请全局并发槽；过期令牌由后续请求清理。 */
+  async acquireAiSlot(token: string, limit: number): Promise<boolean> {
+    if (!this.redis) throw new Error('Redis is required for AI concurrency');
+    const script = `
+      local now = tonumber(redis.call('TIME')[1])
+      redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now)
+      if redis.call('ZCARD', KEYS[1]) >= tonumber(ARGV[2]) then return 0 end
+      redis.call('ZADD', KEYS[1], now + 180, ARGV[1])
+      return 1
+    `;
+    const result = Number(await this.redis.eval(script, 1, 'zc:ai-concurrency:slots', token, limit));
+    if (result !== 0 && result !== 1) throw new Error('Invalid slot result');
+    return result === 1;
+  }
+
+  async releaseAiSlot(token: string): Promise<void> {
+    if (!this.redis) throw new Error('Redis is required for AI concurrency');
+    await this.redis.zrem('zc:ai-concurrency:slots', token);
+  }
+
   /** SETNX 幂等锁：成功返回 true */
   async setNx(key: string, value: string, ttlSec: number): Promise<boolean> {
     if (this.redis) {

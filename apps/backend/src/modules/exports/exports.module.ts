@@ -1,6 +1,9 @@
 import { BadRequestException, Body, Controller, Get, Module, Post, Query } from '@nestjs/common';
 import * as ExcelJS from 'exceljs';
-import { EXPORT_COLUMNS, RESULT_FLAG_LABEL, RESULT_FLAGS, IssueResolution } from '@zc/shared';
+import archiver from 'archiver';
+import * as fs from 'node:fs';
+import { Writable } from 'node:stream';
+import { EXPORT_COLUMNS, RESULT_FLAG_LABEL, RESULT_FLAGS, IssueResolution, LEVEL_PREFIX, NAMING_RULES, ActivityLevel } from '@zc/shared';
 import { Role } from '@zc/shared';
 import { classifyCourse, dedupCourses, isPeCourse, isRequired, EngineCourse } from '../calc/engine';
 import { Decimal, round2, toNum } from '../../common/utils/decimal';
@@ -10,6 +13,10 @@ import { AuditService } from '../audit/audit.service';
 import { StorageService } from '../files/storage.service';
 import { FilesModule } from '../files/files.controller';
 import { CurrentUser, JwtUser, Roles } from '../../common/decorators';
+import { publicJob } from '../../common/utils/public-error';
+import { studentScope } from '../../common/utils/scope';
+
+export type ExportScope = 'CLASS' | 'GRADE' | 'ACADEMIC' | 'MATERIALS';
 
 /**
  * 综测结果导出：与「大数据2025级1班.xlsx」模板严格一致的 30 列双行合并表头。
@@ -19,12 +26,13 @@ import { CurrentUser, JwtUser, Roles } from '../../common/decorators';
 export class ExportsController {
   constructor(private prisma: PrismaService, private jobs: JobService, private storage: StorageService, private audit: AuditService) {}
 
-  /** 发起导出（CLASS 单班 / GRADE 全年级 / ACADEMIC 学业分单表）。产物为 xlsx 文件，经 files/:uuid/download 下载 */
+  /** 发起导出（CLASS 单班 / GRADE 全年级 / ACADEMIC 学业分单表 / MATERIALS 加分证明批量打包）。产物经 files/:uuid/download 下载 */
   @Post()
   @Roles(Role.GRADE_ADMIN, Role.SUPER_ADMIN)
-  async create(@Body() dto: { batchId: string; scope: 'CLASS' | 'GRADE' | 'ACADEMIC'; classId?: string; version?: number }, @CurrentUser() user: JwtUser) {
+  async create(@Body() dto: { batchId: string; scope: ExportScope; classId?: string; version?: number }, @CurrentUser() user: JwtUser) {
     if (!dto?.batchId || !dto.scope) throw new BadRequestException('参数错误');
     if (dto.scope === 'CLASS' && !dto.classId) throw new BadRequestException('班级导出须指定 classId');
+    studentScope(user, dto.classId);
     const jobId = await this.jobs.start({
       kind: 'EXPORT',
       batchId: dto.batchId,
@@ -37,19 +45,23 @@ export class ExportsController {
 
   @Get('history')
   @Roles(Role.GRADE_ADMIN, Role.SUPER_ADMIN)
-  async history(@Query('batchId') batchId?: string) {
-    return this.prisma.importJob.findMany({
-      where: { kind: 'EXPORT', ...(batchId ? { batchId } : {}) },
+  async history(@Query('batchId') batchId?: string, @CurrentUser() user?: JwtUser) {
+    if (!user) throw new BadRequestException('缺少用户身份');
+    studentScope(user);
+    const jobs = await this.prisma.importJob.findMany({
+      where: { kind: 'EXPORT', ...(batchId ? { batchId } : {}), ...(user.role === Role.GRADE_ADMIN ? { operatorId: user.id } : {}) },
       orderBy: { createdAt: 'desc' },
       take: 20,
       select: { id: true, batchId: true, status: true, progress: true, summary: true, resultFileId: true, createdAt: true, error: true },
     });
+    return jobs.map(publicJob);
   }
 
-  private async execute(ctx: JobContext, dto: { batchId: string; scope: 'CLASS' | 'GRADE' | 'ACADEMIC'; classId?: string; version?: number }, user: JwtUser) {
+  private async execute(ctx: JobContext, dto: { batchId: string; scope: ExportScope; classId?: string; version?: number }, user: JwtUser) {
+    if (dto.scope === 'MATERIALS') return this.executeMaterials(ctx, dto, user);
     await ctx.setProgress(5);
     const batch = await ctx.prisma.batch.findUnique({ where: { id: dto.batchId } });
-    if (!batch) throw new Error('批次不存在');
+    if (!batch) throw new BadRequestException('批次不存在');
 
     // 导出已发布版本；未发布批次导出当前候选版（试算预览用途，summary 标注）
     let version = dto.version;
@@ -62,11 +74,12 @@ export class ExportsController {
         version = batch.currentCalcVersion;
       }
     }
-    if (!version) throw new Error('该批次没有可导出的计算结果：请先在「计算引擎」页执行正式计算（试算不落库，无法导出）');
+    if (!version) throw new BadRequestException('该批次没有可导出的计算结果：请先在「计算引擎」页执行正式计算（试算不落库，无法导出）');
 
     // 发布态导出：取每生最新 PUBLISHED 行（增量发布会把更正学生的旧版置 SUPERSEDED、新版置 PUBLISHED，
     // 故不能锁定快照版本号——否则异议更正过的学生会从导出中消失）；指定 version / 候选版才锁版本号
-    const where: any = { batchId: batch.id, ...(dto.scope === 'CLASS' ? { student: { classId: dto.classId! } } : {}) };
+    const scope = studentScope(user, dto.scope === 'CLASS' ? dto.classId : undefined);
+    const where: any = { batchId: batch.id, ...(Object.keys(scope).length ? { student: scope } : {}) };
     if (dto.version) where.version = dto.version;
     else if (published) where.status = 'PUBLISHED';
     else where.version = version;
@@ -76,7 +89,7 @@ export class ExportsController {
       include: { student: { select: { studentNo: true, name: true, className: true, classId: true } } },
       orderBy: [{ student: { className: 'asc' } }, { rankClass: 'asc' }],
     });
-    if (!rows.length) throw new Error('无匹配的计算结果');
+    if (!rows.length) throw new BadRequestException('无匹配的计算结果');
     if (!dto.version) version = rows.reduce((m, r) => Math.max(m, r.version), 0) || version; // 标注实际覆盖的最高版本
 
     // 班级名单（CLASS 单班）
@@ -381,8 +394,124 @@ export class ExportsController {
     return Buffer.from(out);
   }
 
-  private async buildWorkbook(batchName: string, version: number, rows: any[]): Promise<Buffer> {
-    const wb = new ExcelJS.Workbook();
+  /**
+   * 加分证明材料批量打包：每生一个规范命名 zip（汇总其全部申报佐证，按原命名规范
+   * 「{学号} {姓名} {N}加分证明 {M}比赛活动.zip」），再按班级分目录汇总为一个总 zip。
+   */
+  private async executeMaterials(ctx: JobContext, dto: { batchId: string; classId?: string }, user: JwtUser) {
+    await ctx.setProgress(5);
+    const batch = await ctx.prisma.batch.findUnique({ where: { id: dto.batchId } });
+    if (!batch) throw new BadRequestException('批次不存在');
+
+    const scope = studentScope(user, dto.classId);
+    const apps = await ctx.prisma.application.findMany({
+      where: { batchId: batch.id, ...(Object.keys(scope).length ? { student: scope } : {}), attachments: { some: {} } },
+      include: {
+        student: { select: { studentNo: true, name: true, className: true } },
+        ruleItem: { select: { name: true } },
+        attachments: { include: { file: true } },
+      },
+      orderBy: [{ student: { className: 'asc' } }, { student: { studentNo: 'asc' } }, { createdAt: 'asc' }],
+    });
+    if (!apps.length) throw new BadRequestException('该批次（范围）没有任何带佐证材料的申报记录');
+
+    // 按生聚合
+    const byStudent = new Map<string, { student: any; items: typeof apps }>();
+    for (const a of apps) {
+      const hit = byStudent.get(a.studentId);
+      if (hit) hit.items.push(a);
+      else byStudent.set(a.studentId, { student: a.student, items: [a] });
+    }
+
+    const outer = archiver('zip', { zlib: { level: 6 } });
+    const chunks: Buffer[] = [];
+    const sink = new Writable({ write(chunk, _enc, cb) { chunks.push(chunk); cb(); } });
+    const done = new Promise<void>((resolve, reject) => {
+      sink.on('finish', () => resolve());
+      sink.on('error', reject);
+      outer.on('error', reject);
+    });
+    outer.pipe(sink);
+
+    let totalFiles = 0;
+    let doneCount = 0;
+    const seenOuter = new Set<string>();
+    for (const { student, items } of byStudent.values()) {
+      // 内层 zip：佐证文件命名 = 级别前缀 + 活动/证书全称（同 buildNaming 板块二规范）
+      const inner = await this.zipFromEntries(
+        items.flatMap((a) =>
+          a.attachments.map((at) => {
+            const f = at.file;
+            const prefix = a.level && LEVEL_PREFIX[a.level as ActivityLevel] ? LEVEL_PREFIX[a.level as ActivityLevel] : '';
+            const base = a.title?.trim() || f.originalName.replace(/\.[^.]+$/, '');
+            const ext = f.ext === 'jpeg' ? 'jpg' : f.ext;
+            return { entryName: sanitizeEntryName(`[${a.ruleItem.name}] ${prefix}${base}.${ext}`), source: f };
+          }),
+        ),
+      );
+      totalFiles += items.reduce((s, a) => s + a.attachments.length, 0);
+      const compCount = items.filter((a) => ['NATIONAL', 'PROVINCIAL', 'MUNICIPAL'].includes(a.level ?? '')).length;
+      const zipName = fillTemplate(NAMING_RULES.bonusEvidenceZip.replace(' {certs} {cadre}', ''), {
+        studentNo: student.studentNo,
+        name: student.name,
+        bonusCount: String(items.length),
+        compCount: String(compCount),
+        certs: '',
+        cadre: '',
+      });
+      // 班级目录防重名（极端同名同号）
+      let outerName = `${student.className}/${zipName}.zip`;
+      for (let i = 2; seenOuter.has(outerName); i++) outerName = `${student.className}/${zipName}(${i}).zip`;
+      seenOuter.add(outerName);
+      outer.append(inner, { name: outerName });
+      if (++doneCount % 20 === 0) await ctx.setProgress(Math.min(85, 5 + Math.round((doneCount / byStudent.size) * 80)));
+    }
+    await outer.finalize();
+    await done;
+    await ctx.setProgress(90);
+
+    const fileName = dto.classId
+      ? `${apps[0].student.className}_加分证明材料_${batch.semesterKey}.zip`
+      : `软件学院_加分证明材料_${batch.semesterKey}.zip`;
+    const buffer = Buffer.concat(chunks);
+    const saved = await this.storage.saveExport(buffer, fileName, user.id, 'zip');
+    await ctx.prisma.importJob.update({ where: { id: ctx.jobId }, data: { resultFileId: saved.id } });
+    await this.audit.log({
+      operatorId: user.id,
+      action: 'EXPORT_RESULT',
+      resourceType: 'batch',
+      resourceId: batch.id,
+      detail: { scope: 'MATERIALS', classes: seenOuter.size ? [...new Set([...seenOuter].map((n) => n.split('/')[0]))].length : 0, students: byStudent.size, files: totalFiles },
+    });
+    return { fileUuid: saved.uuid, fileName, students: byStudent.size, files: totalFiles };
+  }
+
+  /** 由存储文件列表构建 zip buffer（源文件缺失时以占位说明代替，保证导出不出错） */
+  private async zipFromEntries(entries: { entryName: string; source: any }[]): Promise<Buffer> {
+    const chunks: Buffer[] = [];
+    const sink = new Writable({ write(chunk, _enc, cb) { chunks.push(chunk); cb(); } });
+    const zip = archiver('zip', { zlib: { level: 6 } });
+    const done = new Promise<void>((resolve, reject) => {
+      sink.on('finish', () => resolve());
+      sink.on('error', reject);
+      zip.on('error', reject);
+    });
+    zip.pipe(sink);
+    const seen = new Set<string>();
+    for (const e of entries) {
+      let name = e.entryName;
+      for (let i = 2; seen.has(name); i++) name = e.entryName.replace(/(\.[^.]+)$/, `(${i})$1`);
+      seen.add(name);
+      const abs = this.storage.absPath(e.source.storedPath);
+      if (fs.existsSync(abs)) zip.append(fs.createReadStream(abs), { name });
+      else zip.append(`源文件已丢失：${e.source.originalName}\n`, { name: name.replace(/(\.[^.]+)$/, '-丢失.txt') });
+    }
+    await zip.finalize();
+    await done;
+    return Buffer.concat(chunks);
+  }
+
+  private async buildWorkbook(batchName: string, version: number, rows: any[]): Promise<Buffer> {    const wb = new ExcelJS.Workbook();
     wb.creator = '软件学院综测平台';
     const ws = wb.addWorksheet('综测成绩', {
       views: [{ state: 'frozen', ySplit: 2 }],
@@ -507,6 +636,17 @@ function num(v: any): number | null {
 function guardFormula(s: string): string {
   const v = String(s ?? '');
   return /^[=+\-@]/.test(v) ? `'${v}` : v;
+}
+
+/** 与 packages.service 同语义的命名模板填充（zip 名） */
+function fillTemplate(tpl: string, vars: Record<string, string>) {
+  return tpl.replace(/\{(\w+)\}/g, (_, k) => (vars[k] ?? '').toString()).replace(/\s+/g, ' ').trim();
+}
+
+/** zip 条目名清洗（去控制字符与路径非法符） */
+function sanitizeEntryName(name: string) {
+  const cleaned = name.replace(/[\x00-\x1f\x7f\\/:*?"<>|]/g, '').trim();
+  return cleaned.slice(0, 180) || '未命名.pdf';
 }
 
 @Module({

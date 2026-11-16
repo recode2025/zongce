@@ -1,8 +1,8 @@
 import { useMemo, useState } from 'react';
 import { Alert, App, Button, Card, Descriptions, Space, Steps, Table, Tag, Typography } from 'antd';
-import { InboxOutlined } from '@ant-design/icons';
+import { DownloadOutlined, InboxOutlined } from '@ant-design/icons';
 import { Upload } from 'antd';
-import { ImportPreview, confirmImport, previewImport } from '../api';
+import { ImportPreview, confirmImport, downloadImportTemplate, previewImport } from '../api';
 import { errMsg } from '../api/client';
 import { MappingTable } from './MappingTable';
 import JobProgress from './JobProgress';
@@ -93,6 +93,19 @@ export default function ImportWizard({ kind, batchId, onDone }: ImportWizardProp
         style={{ marginBottom: 20 }}
       />
 
+      {step === 0 && (
+        <div className="zc-iw-tpl">
+          <span>
+            {kind === 'GRADE' ? '推荐按模板整理成绩，列名会自动匹配；教务系统导出的原表也可以直接上传。' : '推荐按模板整理名册，列名会自动匹配；教务系统导出的宽表也可以直接上传。'}
+          </span>
+          <Button
+            icon={<DownloadOutlined />}
+            onClick={() => downloadImportTemplate(kind).catch((e) => message.error(errMsg(e)))}
+          >
+            下载导入模板
+          </Button>
+        </div>
+      )}
       {step === 0 && (
         <Upload.Dragger
           accept=".xlsx,.xls"

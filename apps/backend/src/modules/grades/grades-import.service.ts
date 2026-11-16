@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { createHash } from 'node:crypto';
-import { ColumnMappingEntry, COURSE_NATURES, GRADE_CHAR_MAP, ImportSummary, IssueType } from '@zc/shared';
+import { ColumnMappingEntry, GRADE_CHAR_MAP, ImportSummary, IssueType } from '@zc/shared';
 import { PrismaService } from '../../prisma/prisma.module';
 import { JobContext } from '../../queue/job.service';
 import { mappingToDict } from '../imports/column-matcher';
@@ -111,12 +111,11 @@ export class GradesImportService {
       if (records.length % 500 === 0) await ctx.setProgress((records.length / parsed.rows.length) * 100);
     }
 
-    // 分块写入。DB 唯一键为 (studentId,termKey,courseCode,examType,rawLineHash) 且【不含 batchId】：
-    // - 文件内重复行：仅保留首行
-    // - 本批次已导入：rawLineHash 幂等跳过
-    // - 其他批次已导入（同学期重复建批/批次重建）：成绩行按学期全局唯一，迁移关联到本批次（calc 按 batchId 读成绩，直接跳过会导致本批次无成绩）
+    // 同一成绩按数据库复合唯一键去重（不含 batchId）。已存在的记录只跳过，
+    // 不覆盖分数、不迁移批次，也不删除原记录上的审核/裁决信息。
     const CHUNK = 500;
-    const uniqKey = (x: RowRecord) => `${x.studentId}|${x.termKey}|${x.courseCode}|${x.examType}|${x.rawLineHash}`;
+    const uniqKey = (x: Pick<RowRecord, 'studentId' | 'termKey' | 'courseCode' | 'examType' | 'rawLineHash'>) =>
+      JSON.stringify([x.studentId, x.termKey, x.courseCode, x.examType, x.rawLineHash]);
 
     // 1) 文件内重复行：仅保留首行
     const seenInFile = new Set<string>();
@@ -138,42 +137,30 @@ export class GradesImportService {
       if (summary.skippedRows.length < 200) summary.skippedRows.push({ row: dupFirstRowNo, reason: `文件内重复 ${dupInFile} 行（同学生同课程同考试类型），仅保留首行` });
     }
 
-    // 2) 库内已存在（跨批次预查：hash → 所在 batchId）
+    // 2) 跨批次预查，再按完整复合键匹配，不能只凭 hash 判断另一条记录已存在。
     const existing = new Map<string, string>();
     for (let i = 0; i < deduped.length; i += 1000) {
       const hashes = deduped.slice(i, i + 1000).map((x) => x.rawLineHash);
       const found = await this.prisma.courseGrade.findMany({
         where: { rawLineHash: { in: hashes } },
-        select: { rawLineHash: true, batchId: true },
+        select: { studentId: true, termKey: true, courseCode: true, examType: true, rawLineHash: true, batchId: true },
       });
-      found.forEach((f) => existing.set(f.rawLineHash, f.batchId));
+      found.forEach((f) => existing.set(uniqKey(f), f.batchId));
     }
-    const sameBatch = new Set([...existing.entries()].filter(([, b]) => b === batchId).map(([h]) => h));
-    const crossBatchHashes = [...existing.entries()].filter(([, b]) => b !== batchId).map(([h]) => h);
-    if (crossBatchHashes.length) {
-      for (let i = 0; i < crossBatchHashes.length; i += CHUNK) {
-        const stale = await this.prisma.courseGrade.findMany({
-          where: { rawLineHash: { in: crossBatchHashes.slice(i, i + CHUNK) }, batchId: { not: batchId } },
-          select: { id: true },
-        });
-        const ids = stale.map((s) => s.id);
-        if (!ids.length) continue;
-        // 旧批次上挂着的自动异常随迁移清理（本批次 rebuildIssues 会按新关联重建）
-        await this.prisma.gradeIssue.deleteMany({ where: { courseGradeId: { in: ids }, resolution: 'PENDING', resolvedBy: null } });
-        await this.prisma.courseGrade.updateMany({ where: { id: { in: ids } }, data: { batchId } });
+    // 3) 仅插入不存在的记录；同批次和跨批次重复均计入跳过数。
+    const fresh: RowRecord[] = [];
+    for (const record of deduped) {
+      const previousBatch = existing.get(uniqKey(record));
+      if (previousBatch === undefined) {
+        fresh.push(record);
+        continue;
       }
-      if (summary.skippedRows.length < 200) summary.skippedRows.push({ row: 0, reason: `${crossBatchHashes.length} 行已存在于其他批次（同学期成绩全局唯一），已迁移关联到本批次` });
+      summary.skipped++;
+      if (summary.skippedRows.length < 200) summary.skippedRows.push({
+        row: record.rowNo,
+        reason: previousBatch === batchId ? '该成绩已导入，跳过' : '该成绩已在其他批次导入，跳过并保留原批次关联',
+      });
     }
-
-    // 3) 待插入集：本批次已有 → 幂等跳过；其他批次已有 → 上一步已迁移关联到本批次，同样不再插入
-    //    （迁移过的行若再插入会撞唯一键 —— 唯一键不含 batchId，库中该 hash 已存在）
-    const sameBatchRows = deduped.filter((x) => sameBatch.has(x.rawLineHash));
-    if (sameBatchRows.length) {
-      summary.skipped += sameBatchRows.length;
-      if (summary.skippedRows.length < 200)
-        summary.skippedRows.push({ row: sameBatchRows[0].rowNo, reason: `${sameBatchRows.length} 行本批次已导入过，幂等跳过` });
-    }
-    const fresh = deduped.filter((x) => !existing.has(x.rawLineHash));
 
     let inserted = 0;
     for (let i = 0; i < fresh.length; i += CHUNK) {
@@ -208,8 +195,15 @@ export class GradesImportService {
             count += (await this.prisma.courseGrade.createMany({ data: [d] })).count;
           } catch (e2: any) {
             if (e2?.code !== 'P2002') throw e2;
+            const duplicate = await this.prisma.courseGrade.findUnique({
+              where: { studentId_termKey_courseCode_examType_rawLineHash: {
+                studentId: d.studentId, termKey: d.termKey, courseCode: d.courseCode, examType: d.examType, rawLineHash: d.rawLineHash,
+              } },
+              select: { id: true },
+            });
+            if (!duplicate) throw e2; // 不吞掉其他唯一约束错误。
             summary.skipped++;
-            if (summary.skippedRows.length < 200) summary.skippedRows.push({ row: d.rowNo, reason: '该行已存在（唯一键冲突），跳过' });
+            if (summary.skippedRows.length < 200) summary.skippedRows.push({ row: d.rowNo, reason: '该成绩已导入，跳过' });
           }
         }
       }
@@ -217,9 +211,7 @@ export class GradesImportService {
       await ctx.setProgress(50 + (i / records.length) * 40);
     }
     summary.inserted = inserted;
-    summary.updated = crossBatchHashes.length; // 跨批次迁移关联的行；同批次重复行由 rawLineHash 幂等跳过
-
-    // 重建成绩类异常队列（清除自动生成且未人工处理的，保留人工裁决记录）
+    // 补齐异常队列，也能修复上次在成绩写入后、异常生成前中断的导入。
     await this.rebuildIssues(batchId, termKey, ctx);
     const counts = await this.prisma.gradeIssue.groupBy({ by: ['issueType'], where: { batchId }, _count: { _all: true } });
     summary.issues = counts.map((c) => ({ type: c.issueType as IssueType, count: c._count._all }));
@@ -229,15 +221,6 @@ export class GradesImportService {
 
   /** 依据已入库成绩重建异常 issue */
   private async rebuildIssues(batchId: string, termKey: string, ctx: JobContext) {
-    await this.prisma.gradeIssue.deleteMany({
-      where: {
-        batchId,
-        issueType: { in: ['RESIT_DUP', 'MISSING', 'DEFERRED_EMPTY', 'DISQUALIFIED', 'NON_NUMERIC_SCORE', 'ZERO_CREDIT'] },
-        resolution: 'PENDING',
-        resolvedBy: null,
-      },
-    });
-
     const grades = await this.prisma.courseGrade.findMany({ where: { batchId, termKey }, orderBy: [{ studentId: 'asc' }, { courseCode: 'asc' }, { rowNo: 'asc' }] });
 
     const issues: { batchId: string; studentId: string; courseGradeId: string; issueType: string }[] = [];
@@ -268,14 +251,38 @@ export class GradesImportService {
       if (Number(g.credit) <= 0) issues.push({ batchId, studentId: g.studentId, courseGradeId: g.id, issueType: 'ZERO_CREDIT' });
     }
 
-    // 与库中已有（人工处理过未清除的）记录按唯一键去重后再插入
-    const existingKeys = new Set(
-      (await this.prisma.gradeIssue.findMany({ where: { batchId }, select: { courseGradeId: true, issueType: true } })).map((r) => `${r.courseGradeId}|${r.issueType}`),
-    );
-    const freshIssues = issues.filter((x) => !existingKeys.has(`${x.courseGradeId}|${x.issueType}`));
+    // 保留仍有效的待处理异常和所有人工裁决，只删除已经失效的自动异常。
+    const existing = await this.prisma.gradeIssue.findMany({
+      where: { batchId },
+      select: { id: true, courseGradeId: true, issueType: true, resolution: true, resolvedBy: true },
+    });
+    const issueKey = (x: { courseGradeId: string | null; issueType: string }) => JSON.stringify([x.courseGradeId, x.issueType]);
+    const expectedKeys = new Set(issues.map(issueKey));
+    const automaticTypes = new Set(['RESIT_DUP', 'MISSING', 'DEFERRED_EMPTY', 'DISQUALIFIED', 'NON_NUMERIC_SCORE', 'ZERO_CREDIT']);
+    const staleIds = existing.filter((x) => x.resolution === 'PENDING' && !x.resolvedBy && automaticTypes.has(x.issueType) && !expectedKeys.has(issueKey(x))).map((x) => x.id);
+    if (staleIds.length) await this.prisma.gradeIssue.deleteMany({ where: { id: { in: staleIds }, resolution: 'PENDING', resolvedBy: null } });
+    const existingKeys = new Set(existing.map(issueKey));
+    const freshIssues = issues.filter((x) => !existingKeys.has(issueKey(x)));
     const CHUNK = 500;
     for (let i = 0; i < freshIssues.length; i += CHUNK) {
-      await this.prisma.gradeIssue.createMany({ data: freshIssues.slice(i, i + CHUNK) });
+      const data = freshIssues.slice(i, i + CHUNK);
+      try {
+        await this.prisma.gradeIssue.createMany({ data });
+      } catch (e: any) {
+        if (e?.code !== 'P2002') throw e;
+        for (const issue of data) {
+          try {
+            await this.prisma.gradeIssue.createMany({ data: [issue] });
+          } catch (duplicate: any) {
+            if (duplicate?.code !== 'P2002') throw duplicate;
+            const found = await this.prisma.gradeIssue.findUnique({
+              where: { batchId_courseGradeId_issueType: { batchId, courseGradeId: issue.courseGradeId, issueType: issue.issueType } },
+              select: { id: true },
+            });
+            if (!found) throw duplicate;
+          }
+        }
+      }
       await ctx.setProgress(90 + (i / Math.max(1, freshIssues.length)) * 10);
     }
   }

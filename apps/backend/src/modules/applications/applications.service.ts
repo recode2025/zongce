@@ -1,8 +1,12 @@
 import { BadRequestException, ConflictException, Injectable } from '@nestjs/common';
-import { AppStatus, BatchStatus, Role } from '@zc/shared';
+import { AppStatus, ApplyType, BatchStatus, Role } from '@zc/shared';
 import { PrismaService } from '../../prisma/prisma.module';
 import { JwtUser } from '../../common/decorators';
 import { AuditService } from '../audit/audit.service';
+import { assertStudentScope, studentScope } from '../../common/utils/scope';
+
+/** SysConfig 键：学生提交通道总开关（'false' = 关闭；默认开启）。服务端强制，前端改代码无法绕过 */
+export const APPLY_SWITCH_KEY = 'apply.enabled';
 
 export interface SubmitApplicationDto {
   batchId: string;
@@ -18,10 +22,30 @@ export interface SubmitApplicationDto {
 export class ApplicationsService {
   constructor(private prisma: PrismaService, private audit: AuditService) {}
 
+  /** 提交通道是否开放（SysConfig apply.enabled，缺省视为开放） */
+  async isApplyOpen(): Promise<boolean> {
+    const row = await this.prisma.sysConfig.findUnique({ where: { key: APPLY_SWITCH_KEY } });
+    return row?.value !== 'false';
+  }
+
+  async assertApplyOpen() {
+    if (!(await this.isApplyOpen())) {
+      throw new BadRequestException('学生提交通道已由管理员关闭，暂不可提交，请关注公告通知');
+    }
+  }
+
   async submit(user: JwtUser, dto: SubmitApplicationDto) {
+    await this.assertApplyOpen();
     const student = await this.prisma.student.findUnique({ where: { userId: user.id } });
     if (!student) throw new BadRequestException('仅学生账号可提交加分申请');
-    if (student.enrollStatus !== 'NORMAL') throw new BadRequestException('当前学籍状态不可申报（休学/无学籍），请联系辅导员');
+    if (student.enrollStatus !== 'NORMAL') throw new BadRequestException('当前学籍状态不可申报（休学/无学籍），请联系管理员');
+
+    const rule = await this.prisma.ruleItem.findUnique({ where: { id: dto.ruleItemId } });
+    if (!rule || !rule.isActive) throw new BadRequestException('加分项不存在或已停用');
+    // 统一加分项在任何阶段都拒绝个人申报（优先于阶段提示，让学生明确知道无需申报）
+    if (rule.applyType === ApplyType.UNIFIED) {
+      throw new BadRequestException(`「${rule.name}」为统一加分项，无需个人申报，学院将按统一名单直接导入分值`);
+    }
 
     const batch = await this.prisma.batch.findUnique({ where: { id: dto.batchId } });
     if (!batch) throw new BadRequestException('批次不存在');
@@ -29,14 +53,23 @@ export class ApplicationsService {
       throw new BadRequestException('当前批次不在材料收集阶段，无法提交');
     }
 
-    const rule = await this.prisma.ruleItem.findUnique({ where: { id: dto.ruleItemId } });
-    if (!rule || !rule.isActive) throw new BadRequestException('加分项不存在或已停用');
-
     const title = String(dto.title ?? '').trim();
     if (!title) throw new BadRequestException('请填写活动/证书全称');
 
     // 1. detailSchema 校验 + 归一化
-    const detail = this.validateDetail(rule.detailSchema as any[], dto.detail ?? {});
+    const rawDetail = dto.detail ?? {};
+    if (typeof rawDetail !== 'object' || Array.isArray(rawDetail)) throw new BadRequestException('申报明细格式不正确');
+    if (rule.code === 'ACA_COMPETITION') {
+      const name = rawDetail.competitionName;
+      const norm = (s: string) => s.replace(/[\s·・.。,，、()（）""'']/g, '').toLowerCase();
+      if (name != null && (typeof name !== 'string' || (name.trim() && norm(name) !== norm(title)))) {
+        throw new BadRequestException('竞赛全称须与申报名称一致');
+      }
+    }
+    const detail = this.validateDetail(rule.detailSchema as any[], {
+      ...rawDetail,
+      ...(rule.code === 'ACA_COMPETITION' ? { competitionName: title } : {}),
+    });
     // 2. 白名单校验（竞赛目录 / 语言证书）
     const wl = await this.checkWhitelist(rule, title, detail);
     // 3. 申报分值：select 选项 score 优先，退回 defaultScore
@@ -116,11 +149,11 @@ export class ApplicationsService {
     return rows;
   }
 
-  /** 申请列表（班委本班 / 辅导员全年级 / 超管全量） */
+  /** 申请列表（班委本班 / 管理员全年级 / 超管全量） */
   async list(user: JwtUser, query: { batchId: string; status?: string; classId?: string; ruleCode?: string; page?: number; pageSize?: number; q?: string }) {
     const where: any = { batchId: query.batchId };
-    if (user.role === Role.CLASS_LEADER && user.classId) where.classId = user.classId;
-    else if (query.classId) where.classId = query.classId;
+    const student = studentScope(user, query.classId);
+    if (Object.keys(student).length) where.student = student;
     if (query.status) where.status = query.status;
     if (query.ruleCode) where.ruleItem = { code: query.ruleCode };
     if (query.q) where.OR = [{ title: { contains: query.q } }, { student: { name: { contains: query.q } } }, { student: { studentNo: { contains: query.q } } }];
@@ -144,19 +177,19 @@ export class ApplicationsService {
     return { total, page, pageSize, rows };
   }
 
-  /** 详情（含轨迹）；班委/辅导员数据范围校验 */
+  /** 详情（含轨迹）；班委/管理员数据范围校验 */
   async detail(user: JwtUser, id: string) {
     const app = await this.prisma.application.findUnique({
       where: { id },
       include: {
-        student: { select: { id: true, studentNo: true, name: true, classId: true, className: true } },
+        student: { select: { id: true, studentNo: true, name: true, classId: true, className: true, grade: true } },
         ruleItem: true,
         attachments: { include: { file: { select: { uuid: true, originalName: true, ext: true, size: true, id: true } } } },
         reviewLogs: { orderBy: { createdAt: 'asc' } },
       },
     });
     if (!app) throw new BadRequestException('申请不存在');
-    this.assertScope(user, app.student.id, app.classId);
+    assertStudentScope(user, app.student);
     return app;
   }
 
@@ -176,21 +209,30 @@ export class ApplicationsService {
 
   // ---------- 内部 ----------
 
-  private assertScope(user: JwtUser, studentId: string, classId: string) {
-    if (user.role === Role.SUPER_ADMIN || user.role === Role.GRADE_ADMIN) return;
-    if (user.role === Role.CLASS_LEADER && user.classId === classId) return;
-    throw new BadRequestException('无权访问该申请');
-  }
-
   /** detailSchema 必填校验与字符串清洗 */
   private validateDetail(schema: any[], detail: Record<string, any>) {
     const out: Record<string, any> = {};
     for (const f of schema ?? []) {
-      const v = detail?.[f.field];
+      const raw = detail?.[f.field];
+      const v = typeof raw === 'string' ? raw.trim() : raw;
       const empty = v === undefined || v === null || v === '';
       if (f.required && empty) throw new BadRequestException(`请填写「${f.label}」`);
-      if (!empty) out[f.field] = typeof v === 'string' ? v.trim().slice(0, 500) : v;
-      else if (v !== undefined) out[f.field] = v;
+      if (empty) continue;
+      const invalid = () => { throw new BadRequestException(`「${f.label}」格式不正确`); };
+      if (f.type === 'select') {
+        if (!Array.isArray(f.options) || !f.options.some((option: any) => option.value === v)) invalid();
+      } else if (f.type === 'number') {
+        if (typeof v !== 'number' || !Number.isFinite(v)) invalid();
+      } else if (f.type === 'boolean') {
+        if (typeof v !== 'boolean') invalid();
+      } else if (f.type === 'date') {
+        if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v)) invalid();
+        const date = new Date(`${v}T00:00:00.000Z`);
+        if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== v) invalid();
+      } else if (f.type === 'string' || f.type === 'textarea') {
+        if (typeof v !== 'string' || v.length > 500) invalid();
+      }
+      out[f.field] = v;
     }
     return out;
   }
@@ -214,7 +256,7 @@ export class ApplicationsService {
         }
       }
       if (!best) {
-        throw new BadRequestException(`「${title}」不在教务处当年度赛事认定目录中，不予加分。请在申报前核对认定目录，或联系辅导员确认`);
+        throw new BadRequestException(`「${title}」不在教务处当年度赛事认定目录中，不予加分。请在申报前核对认定目录，或联系管理员确认`);
       }
       return best;
     }

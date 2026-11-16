@@ -21,6 +21,7 @@ import { CalcModule } from './modules/calc/calc.module';
 import { PublishModule } from './modules/publish/publish.module';
 import { ExportsModule } from './modules/exports/exports.module';
 import { StatsModule } from './modules/stats/stats.module';
+import { ScholarshipsModule } from './modules/scholarships/scholarships.module';
 import { NotifyModule } from './modules/notify/notify.module';
 
 @Module({
@@ -47,6 +48,7 @@ import { NotifyModule } from './modules/notify/notify.module';
     PublishModule,
     ExportsModule,
     StatsModule,
+    ScholarshipsModule,
     NotifyModule,
   ],
   providers: [

@@ -5,6 +5,7 @@ import { CacheService } from '../../cache/cache.service';
 import { AuditService } from '../audit/audit.service';
 import { CurrentUser, JwtUser, Roles } from '../../common/decorators';
 import { rateLimit } from '../../common/utils/rate-limit';
+import { assertStudentScope, studentScope } from '../../common/utils/scope';
 
 const DAY = 24 * 3600;
 
@@ -20,7 +21,7 @@ export class PublishController {
 
   /** 发布（正式/二次公示）。publicityDays 公示天数（默认 3）；hideTopRank 仅第一轮生效：隐藏年级前 N 名的排名 */
   @Post('release')
-  @Roles(Role.GRADE_ADMIN, Role.SUPER_ADMIN)
+  @Roles(Role.SUPER_ADMIN)
   async release(@Body() dto: { batchId: string; publicityDays?: number; publicityEnd?: string; hideTopRank?: number }, @CurrentUser() user: JwtUser) {
     const batch = await this.prisma.batch.findUnique({ where: { id: dto.batchId } });
     if (!batch) throw new BadRequestException('批次不存在');
@@ -79,7 +80,7 @@ export class PublishController {
 
   /** 增量发布：自动检测"最新版与已发布版不一致"的学生，逐生晋升 + 精准刷新快照 */
   @Post('incremental')
-  @Roles(Role.GRADE_ADMIN, Role.SUPER_ADMIN)
+  @Roles(Role.SUPER_ADMIN)
   async incremental(@Body() dto: { batchId: string }, @CurrentUser() user: JwtUser) {
     const batch = await this.prisma.batch.findUnique({ where: { id: dto.batchId } });
     if (!batch) throw new BadRequestException('批次不存在');
@@ -108,9 +109,39 @@ export class PublishController {
     return { refreshed: changed.length, students: changed.map((r) => r.student.studentNo) };
   }
 
+  /** 学生历次成绩：本人有已发布成绩的全部批次（新→旧），供查分页切换学期。
+      只返回总分，不返回排名（第一轮公示可能对年级前 N 名隐藏排名，排名以单批次查分接口为准） */
+  @Get('scores/mine/batches')
+  @Roles(Role.STUDENT, Role.CLASS_LEADER)
+  async myScoreBatches(@CurrentUser() user: JwtUser) {
+    const student = await this.prisma.student.findUnique({ where: { userId: user.id } });
+    if (!student) throw new BadRequestException('非学生账号');
+    const rows = await this.prisma.calcResult.findMany({
+      where: { studentId: student.id, status: 'PUBLISHED' },
+      orderBy: { version: 'desc' },
+      select: {
+        batchId: true,
+        totalScore: true,
+        batch: { select: { name: true, semesterKey: true, status: true, createdAt: true } },
+      },
+    });
+    // 每个批次只取最新发布版本（增量发布会使同批次存在多行 PUBLISHED 的历史，orderBy version desc 后首行即最新）
+    const seen = new Set<string>();
+    return rows
+      .filter((r) => (seen.has(r.batchId) ? false : (seen.add(r.batchId), true)))
+      .sort((a, b) => b.batch.createdAt.getTime() - a.batch.createdAt.getTime())
+      .map((r) => ({
+        batchId: r.batchId,
+        name: r.batch.name,
+        semesterKey: r.batch.semesterKey,
+        status: r.batch.status,
+        totalScore: Number(r.totalScore),
+      }));
+  }
+
   /** 学生查分：只打快照（Redis 单次 GET，miss 回源 DB 并回填）；限流 10/min */
   @Get('scores/mine')
-  @Roles(Role.STUDENT)
+  @Roles(Role.STUDENT, Role.CLASS_LEADER)
   async myScore(@CurrentUser() user: JwtUser, @Query('batchId') batchId?: string) {
     await rateLimit(this.cache, { scope: 'score', id: user.id, limit: 10, windowSec: 60 }).catch(() => undefined);
     const student = await this.prisma.student.findUnique({ where: { userId: user.id } });
@@ -129,7 +160,7 @@ export class PublishController {
 
   /** 公示轮次列表 */
   @Get('rounds')
-  @Roles(Role.GRADE_ADMIN, Role.SUPER_ADMIN)
+  @Roles(Role.SUPER_ADMIN)
   async rounds(@Query('batchId') batchId: string) {
     if (!batchId) throw new BadRequestException('缺少 batchId');
     const rounds = await this.prisma.publishSnapshot.findMany({
@@ -153,7 +184,7 @@ export class PublishController {
   // ---------- 异议 ----------
 
   @Post('objections')
-  @Roles(Role.STUDENT)
+  @Roles(Role.STUDENT, Role.CLASS_LEADER)
   async submitObjection(@Body() dto: { batchId: string; content: string; targetApplicationId?: string }, @CurrentUser() user: JwtUser) {
     const student = await this.prisma.student.findUnique({ where: { userId: user.id } });
     if (!student) throw new BadRequestException('非学生账号');
@@ -163,6 +194,10 @@ export class PublishController {
     const content = String(dto.content ?? '').trim();
     if (content.length < 10) throw new BadRequestException('异议说明至少 10 个字');
     if (content.length > 2000) throw new BadRequestException('异议说明过长');
+    if (dto.targetApplicationId) {
+      const application = await this.prisma.application.findFirst({ where: { id: dto.targetApplicationId, studentId: student.id, batchId: dto.batchId }, select: { id: true } });
+      if (!application) throw new BadRequestException('关联申请不存在');
+    }
 
     const dup = await this.prisma.objection.findFirst({ where: { snapshotId: snapshot.id, studentId: student.id, status: ObjectionStatus.SUBMITTED } });
     if (dup) throw new ConflictException('本轮公示你已提交过异议，请等待处理结果');
@@ -175,7 +210,7 @@ export class PublishController {
   }
 
   @Get('objections/mine')
-  @Roles(Role.STUDENT)
+  @Roles(Role.STUDENT, Role.CLASS_LEADER)
   async myObjections(@CurrentUser() user: JwtUser, @Query('batchId') batchId?: string) {
     const student = await this.prisma.student.findUnique({ where: { userId: user.id } });
     if (!student) return [];
@@ -184,10 +219,11 @@ export class PublishController {
 
   @Get('objections')
   @Roles(Role.GRADE_ADMIN, Role.SUPER_ADMIN)
-  async objections(@Query('batchId') batchId: string, @Query('status') status?: string) {
+  async objections(@Query('batchId') batchId: string, @Query('status') status: string | undefined, @CurrentUser() user: JwtUser) {
     if (!batchId) throw new BadRequestException('缺少 batchId');
+    const scope = studentScope(user);
     return this.prisma.objection.findMany({
-      where: { batchId, ...(status ? { status } : {}) },
+      where: { batchId, ...(status ? { status } : {}), ...(Object.keys(scope).length ? { student: scope } : {}) },
       orderBy: [{ status: 'asc' }, { createdAt: 'desc' }],
       include: { student: { select: { studentNo: true, name: true, className: true } } },
     });
@@ -196,8 +232,9 @@ export class PublishController {
   @Post('objections/:id/handle')
   @Roles(Role.GRADE_ADMIN, Role.SUPER_ADMIN)
   async handleObjection(@Param('id') id: string, @Body() dto: { status: ObjectionStatus; note?: string }, @CurrentUser() user: JwtUser) {
-    const obj = await this.prisma.objection.findUnique({ where: { id }, include: { student: { select: { userId: true, name: true } } } });
+    const obj = await this.prisma.objection.findUnique({ where: { id }, include: { student: { select: { userId: true, name: true, classId: true, grade: true } } } });
     if (!obj || obj.status !== ObjectionStatus.SUBMITTED) throw new BadRequestException('异议不存在或已处理');
+    assertStudentScope(user, obj.student);
     if (![ObjectionStatus.ACCEPTED, ObjectionStatus.REJECTED].includes(dto?.status)) throw new BadRequestException('处理结果只能是 成立/不成立');
     await this.prisma.objection.update({
       where: { id },

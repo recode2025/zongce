@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Progress, Space, Typography } from 'antd';
 import { ImportJob, fetchJob } from '../api';
+import { publicErrorText, TASK_FAILED_MESSAGE } from '@zc/shared';
 
 /** 导入/计算/导出任务进度轮询（后端接口即返 jobId，前端 1s 轮询） */
 export default function JobProgress({
@@ -53,7 +54,7 @@ export default function JobProgress({
         percent={job.progress ?? 0}
         status={job.status === 'FAILED' ? 'exception' : job.status === 'DONE' ? 'success' : 'active'}
       />
-      {job.status === 'FAILED' && <Alert type="error" showIcon message="任务失败" description={job.error ?? '未知错误'} />}
+      {job.status === 'FAILED' && <Alert type="error" showIcon message="任务失败" description={publicErrorText(job.error, TASK_FAILED_MESSAGE)} />}
       {job.status === 'DONE' && job.summary && (
         <Alert
           type="success"

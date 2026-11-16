@@ -45,8 +45,32 @@ async function api(method, path, { token, body, formData, raw } = {}) {
   return { status: res.status, json };
 }
 
+/** 密语门（本地登录须携带 gateToken；缓存复用，过期 401 时重取一次） */
+let GATE_TOKEN = null;
+async function gateToken() {
+  if (GATE_TOKEN) return GATE_TOKEN;
+  const r = await api('POST', '/auth/gate', { body: { passphrase: process.env.LOGIN_PASSPHRASE || 'DUFL1964' } });
+  if (r.status !== 200) throw new Error(`密语验证失败: ${JSON.stringify(r.json)}`);
+  GATE_TOKEN = r.json.gateToken;
+  return GATE_TOKEN;
+}
+
+/** 图形验证码：从 svg 的 <text> 节点依序取字符 */
+function solveCaptcha(svg) {
+  return [...String(svg).matchAll(/<text[^>]*>([A-HJ-NP-Z2-9])<\/text>/g)].map((m) => m[1]).join('');
+}
+
 async function login(username, password) {
-  const r = await api('POST', '/auth/login', { body: { username, password } });
+  const cap = await api('GET', '/auth/captcha');
+  const attempt = () =>
+    api('POST', '/auth/login', {
+      body: { username, password, gateToken: await gateToken(), captchaId: cap.json.captchaId, captchaCode: solveCaptcha(cap.json.svg) },
+    });
+  let r = await attempt();
+  if (r.status === 401 && GATE_TOKEN) {
+    GATE_TOKEN = null; // 门过期（>10 分钟）重取一次（验证码已作废则按 400 抛出）
+    r = await attempt();
+  }
   if (r.status !== 200) throw new Error(`登录失败 ${username}: ${JSON.stringify(r.json)}`);
   return r.json; // { accessToken, mustChangePwd, user }
 }
@@ -203,7 +227,7 @@ let appId, pkgId;
 }
 
 // ============ 7. 两级审核 ============
-console.log('\n——— 7. 班委初审 → 辅导员复审 ———');
+console.log('\n——— 7. 班委初审 → 管理员复审 ———');
 {
   const list = (await api('GET', `/applications?batchId=${batchId}&status=SUBMITTED`, { token: leaderTok })).json;
   const rows = list.items ?? list.rows ?? list;

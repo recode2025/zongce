@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, NotFoundException, OnModuleInit } from
 import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { pipeline } from 'node:stream';
 import * as yauzl from 'yauzl';
 import * as iconv from 'iconv-lite';
 import { PrismaService } from '../../prisma/prisma.module';
@@ -105,7 +106,8 @@ export class ZipService implements OnModuleInit {
     fs.mkdirSync(tmpDir, { recursive: true });
     const tmpPath = path.join(tmpDir, tmpName);
 
-    await new Promise<void>((resolve, reject) => {
+    try {
+      await new Promise<void>((resolve, reject) => {
       yauzl.open(zipAbs, { lazyEntries: true, autoClose: true, decodeStrings: false }, (err, zipfile) => {
         if (err || !zipfile) return reject(err ?? new Error('zip 打开失败'));
         zipfile.readEntry();
@@ -118,12 +120,11 @@ export class ZipService implements OnModuleInit {
                 return reject(e2 ?? new Error('读取失败'));
               }
               const out = fs.createWriteStream(tmpPath, { mode: 0o600 });
-              readStream.pipe(out);
-              out.on('finish', () => {
+              pipeline(readStream, out, (error) => {
                 zipfile.close();
-                resolve();
+                if (error) reject(new BadRequestException('压缩包内容损坏，无法预览'));
+                else resolve();
               });
-              out.on('error', reject);
             });
           } else {
             zipfile.readEntry();
@@ -132,7 +133,12 @@ export class ZipService implements OnModuleInit {
         zipfile.on('end', () => reject(new NotFoundException('压缩包内未找到该文件')));
         zipfile.on('error', reject);
       });
-    });
+      });
+    } catch (error) {
+      // pipeline 销毁流后清理不完整的临时文件。
+      await fs.promises.rm(tmpPath, { force: true });
+      throw error;
+    }
 
     // 登记为派生文件（parentZipId 关联）
     const buffer = fs.readFileSync(tmpPath);
@@ -170,11 +176,17 @@ export class ZipService implements OnModuleInit {
       yauzl.open(abs, { lazyEntries: true, autoClose: true, decodeStrings: false }, (err, zipfile) => {
         if (err || !zipfile) return reject(new BadRequestException('无法读取压缩包（文件可能损坏）'));
         const entries: yauzl.Entry[] = [];
+        let totalUncompressed = 0;
         zipfile.on('entry', (entry: any) => {
           // 大小预检（central directory 声明值）
           if (entry.uncompressedSize > env.zipMaxTotalBytes) {
             zipfile.close();
             return reject(new BadRequestException('压缩包内单文件过大'));
+          }
+          totalUncompressed += entry.uncompressedSize;
+          if (entries.length >= env.zipMaxEntries || totalUncompressed > env.zipMaxTotalBytes) {
+            zipfile.close();
+            return reject(new BadRequestException(entries.length >= env.zipMaxEntries ? `压缩包内文件数超过限制（${env.zipMaxEntries}）` : '解压后总大小超过限制'));
           }
           entries.push(entry as yauzl.Entry);
           zipfile.readEntry();

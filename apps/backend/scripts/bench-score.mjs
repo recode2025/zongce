@@ -14,11 +14,29 @@ const ROUNDS = 8;
 const prisma = new PrismaClient();
 const randIp = () => `10.${Math.floor(Math.random() * 250)}.${Math.floor(Math.random() * 250)}.${Math.floor(Math.random() * 250)}`;
 
+// 密语门（本地登录须携带 gateToken；取一次全量复用，gate 限流 15/600s 不容许逐次获取）
+let GATE = null;
+async function gateToken() {
+  if (GATE) return GATE;
+  const r = await fetch(`${BASE}/auth/gate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ passphrase: process.env.LOGIN_PASSPHRASE || 'DUFL1964' }),
+  });
+  if (r.status !== 200) throw new Error(`gate → ${r.status}`);
+  GATE = (await r.json()).gateToken;
+  return GATE;
+}
+
+/** 图形验证码：从 svg 的 <text> 节点依序取字符 */
+const solveCaptcha = (svg) => [...String(svg).matchAll(/<text[^>]*>([A-HJ-NP-Z2-9])<\/text>/g)].map((m) => m[1]).join('');
+
 async function login(username) {
+  const cap = await (await fetch(`${BASE}/auth/captcha`)).json();
   const r = await fetch(`${BASE}/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': randIp() },
-    body: JSON.stringify({ username, password: username.slice(-6) }),
+    body: JSON.stringify({ username, password: username.slice(-6), gateToken: await gateToken(), captchaId: cap.captchaId, captchaCode: solveCaptcha(cap.svg) }),
   });
   if (r.status !== 200) throw new Error(`login ${username} → ${r.status}`);
   return (await r.json()).accessToken;

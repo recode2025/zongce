@@ -1,7 +1,8 @@
 import { BadRequestException, Controller, Get, Module, Query } from '@nestjs/common';
 import { AppStatus, BatchStatus, IssueResolution, PackageStatus, Role } from '@zc/shared';
 import { PrismaService } from '../../prisma/prisma.module';
-import { Roles } from '../../common/decorators';
+import { CurrentUser, JwtUser, Roles } from '../../common/decorators';
+import { studentScope } from '../../common/utils/scope';
 
 /** 统计看板：提交率 / 审核积压 / 分数分布 / 异常计数 —— 全部实时聚合，无缓存 */
 @Controller('stats')
@@ -10,28 +11,29 @@ export class StatsController {
 
   @Get('overview')
   @Roles(Role.GRADE_ADMIN, Role.SUPER_ADMIN)
-  async overview(@Query('batchId') batchId: string) {
+  async overview(@Query('batchId') batchId: string, @CurrentUser() user: JwtUser) {
     if (!batchId) throw new BadRequestException('缺少 batchId');
+    const scope = studentScope(user);
     const batch = await this.prisma.batch.findUnique({ where: { id: batchId } });
     if (!batch) throw new BadRequestException('批次不存在');
 
     const [studentTotal, suspended, classes] = await Promise.all([
-      this.prisma.student.count({ where: { enrollStatus: 'NORMAL' } }),
-      this.prisma.student.count({ where: { enrollStatus: { not: 'NORMAL' } } }),
-      this.prisma.clazz.count(),
+      this.prisma.student.count({ where: { ...scope, enrollStatus: 'NORMAL' } }),
+      this.prisma.student.count({ where: { ...scope, enrollStatus: { not: 'NORMAL' } } }),
+      this.prisma.clazz.count({ where: scope.grade == null ? {} : { grade: scope.grade } }),
     ]);
 
     const [appsByStatus, pkgsByStatus, issuesByType, issuesPending] = await Promise.all([
-      this.prisma.application.groupBy({ by: ['status'], where: { batchId }, _count: { _all: true } }),
-      this.prisma.materialPackage.groupBy({ by: ['status', 'section'], where: { batchId }, _count: { _all: true } }),
-      this.prisma.gradeIssue.groupBy({ by: ['issueType', 'resolution'], where: { batchId }, _count: { _all: true } }),
-      this.prisma.gradeIssue.count({ where: { batchId, resolution: IssueResolution.PENDING } }),
+      this.prisma.application.groupBy({ by: ['status'], where: { batchId, student: scope }, _count: { _all: true } }),
+      this.prisma.materialPackage.groupBy({ by: ['status', 'section'], where: { batchId, student: scope }, _count: { _all: true } }),
+      this.prisma.gradeIssue.groupBy({ by: ['issueType', 'resolution'], where: { batchId, student: scope }, _count: { _all: true } }),
+      this.prisma.gradeIssue.count({ where: { batchId, student: scope, resolution: IssueResolution.PENDING } }),
     ]);
 
     // 分班提交率：学生数 vs 已提交任一板块的人数
     const [classRows, submittedStudents] = await Promise.all([
-      this.prisma.clazz.findMany({ select: { id: true, name: true, _count: { select: { students: { where: { enrollStatus: 'NORMAL' } } } } }, orderBy: { name: 'asc' } }),
-      this.prisma.materialPackage.findMany({ where: { batchId, status: { in: [PackageStatus.SUBMITTED, PackageStatus.FIRST_PASSED, PackageStatus.FIRST_REJECTED] } }, select: { studentId: true, student: { select: { classId: true } } } }),
+      this.prisma.clazz.findMany({ where: scope.grade == null ? {} : { grade: scope.grade }, select: { id: true, name: true, _count: { select: { students: { where: { enrollStatus: 'NORMAL' } } } } }, orderBy: { name: 'asc' } }),
+      this.prisma.materialPackage.findMany({ where: { batchId, student: scope, status: { in: [PackageStatus.SUBMITTED, PackageStatus.FIRST_PASSED, PackageStatus.FIRST_REJECTED] } }, select: { studentId: true, student: { select: { classId: true } } } }),
     ]);
     const submittedByClass = new Map<string, Set<string>>();
     for (const p of submittedStudents) {
@@ -53,7 +55,7 @@ export class StatsController {
     const snap = await this.prisma.publishSnapshot.findFirst({ where: { batchId, status: 'ACTIVE' } });
     const version = snap?.calcVersion ?? batch.currentCalcVersion;
     const results = version
-      ? await this.prisma.calcResult.findMany({ where: { batchId, version }, select: { totalScore: true, flags: true, moralTotal: true } })
+      ? await this.prisma.calcResult.findMany({ where: { batchId, version, student: scope }, select: { totalScore: true, flags: true, moralTotal: true } })
       : [];
     const bucket = (n: number) => (n >= 90 ? '90+' : n >= 80 ? '80-90' : n >= 70 ? '70-80' : n >= 60 ? '60-70' : '<60');
     const dist: Record<string, number> = { '90+': 0, '80-90': 0, '70-80': 0, '60-70': 0, '<60': 0 };

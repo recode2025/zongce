@@ -14,7 +14,7 @@ import {
   Tag,
   Typography,
 } from 'antd';
-import { ReloadOutlined } from '@ant-design/icons';
+import { CheckCircleOutlined, ClockCircleOutlined, ReloadOutlined } from '@ant-design/icons';
 import { APP_STATUS_LABEL } from '@zc/shared';
 import {
   ClassInfo,
@@ -152,18 +152,36 @@ export default function FirstReview() {
           </Button>
         </Space>
         {stats && (
-          <Space size="large" style={{ marginTop: 12 }} wrap>
-            {Object.entries(stats.applications).map(([s, n]) => (
-              <Statistic
-                key={s}
-                title={APP_STATUS_LABEL[s as keyof typeof APP_STATUS_LABEL] ?? s}
-                value={n as number}
-                valueStyle={{ color: s === 'SUBMITTED' ? '#faad14' : undefined, fontSize: 20 }}
-              />
-            ))}
-            <Statistic title="材料包待初审" value={stats.packages.SUBMITTED ?? 0} valueStyle={{ color: '#faad14', fontSize: 20 }} />
-            <Statistic title="材料包已通过" value={stats.packages.FIRST_PASSED ?? 0} valueStyle={{ fontSize: 20 }} />
-          </Space>
+          <div className="zc-first-review-stats">
+            {Object.keys(stats.applications).length > 0 && (
+              <div className="zc-first-review-app-stats">
+                {Object.entries(stats.applications).map(([s, n]) => (
+                  <Statistic
+                    key={s}
+                    title={APP_STATUS_LABEL[s as keyof typeof APP_STATUS_LABEL] ?? s}
+                    value={n as number}
+                    valueStyle={{ color: s === 'SUBMITTED' ? 'var(--zc-warning)' : undefined, fontSize: 20 }}
+                  />
+                ))}
+              </div>
+            )}
+            <div className="zc-first-review-package-stats" role="group" aria-label="材料包初审统计">
+              <div className="zc-first-review-package-stat is-pending">
+                <Statistic
+                  title={<><ClockCircleOutlined aria-hidden="true" />材料包待初审</>}
+                  value={stats.packages.SUBMITTED ?? 0}
+                  suffix="个"
+                />
+              </div>
+              <div className="zc-first-review-package-stat is-passed">
+                <Statistic
+                  title={<><CheckCircleOutlined aria-hidden="true" />材料包已通过</>}
+                  value={stats.packages.FIRST_PASSED ?? 0}
+                  suffix="个"
+                />
+              </div>
+            </div>
+          </div>
         )}
       </Card>
 

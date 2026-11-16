@@ -31,6 +31,8 @@ export interface RuleItem {
   code: string;
   category: 'MORAL' | 'ACADEMIC' | 'SPORTS';
   name: string;
+  /** 申报方式：SELF 自主申报 / UNIFIED 统一加分（名单导入，学生端不可申报） */
+  applyType?: 'SELF' | 'UNIFIED';
   description?: string | null;
   detailSchema: { field: string; label: string; type: string; required?: boolean; options?: { value: string; label: string; score?: number }[]; placeholder?: string }[];
   defaultScore: number | null;
@@ -44,7 +46,24 @@ export interface RuleItem {
 }
 export const fetchRuleItems = (params?: { category?: string; batchId?: string }) => get<RuleItem[]>('/rules/items', params);
 export const fetchWhitelists = (params?: { type?: string; q?: string; limit?: number }) => get<any[]>('/rules/whitelists', params);
+export const generateApplicationDraft = (data: { ruleItemId: string; text: string }) =>
+  post<{ title?: string; detail: Record<string, unknown> }>('/applications/ai-draft', data);
+export const generateApplicationDraftFromImages = (data: { ruleItemId: string; fileIds: string[]; text?: string }) =>
+  post<{ title?: string; detail: Record<string, unknown> }>('/applications/ai-evidence', data);
 export const updateRuleItem = (id: string, body: any) => http.put(`/rules/items/${id}`, body).then((r) => r.data);
+/** 统一加分：下载导入模板（学号/姓名/分值） */
+/** 成绩 / 学生名册导入模板（表头即自动匹配列名，附填写说明） */
+const TEMPLATE_NAME = { GRADE: '课程成绩导入模板.xlsx', STUDENT: '学生名册导入模板.xlsx', REGISTRATION: '综测登记表导入模板.xlsx' } as const;
+export const downloadImportTemplate = (kind: keyof typeof TEMPLATE_NAME) => dl(`/imports/template?kind=${kind}`, TEMPLATE_NAME[kind]);
+export const downloadUnifiedTemplate = (id: string, ruleName: string) => dl(`/rules/items/${id}/unified-template`, `${ruleName}-统一加分模板.xlsx`);
+/** 统一加分：导入名单（学号 → 分值），返回 created/updated/skipped/未知学号 摘要 */
+export const importUnifiedScores = (id: string, batchId: string, file: File) => {
+  const fd = new FormData();
+  fd.append('file', file);
+  return http
+    .post(`/rules/items/${id}/unified-import`, fd, { params: { batchId }, headers: { 'Content-Type': 'multipart/form-data' } })
+    .then((r) => r.data as { rule: { id: string; name: string }; total: number; created: number; updated: number; skipped: number; unknownStudentNos: string[]; conflicts: { studentNo: string; status: string; title: string }[] });
+};
 export const addWhitelist = (body: { type: string; year?: number; names: string[] }) => post('/rules/whitelists', body);
 export const removeWhitelist = (id: string) => post(`/rules/whitelists/${id}/delete`);
 
@@ -174,6 +193,15 @@ export const releasePublish = (dto: { batchId: string; publicityDays?: number; p
   post<{ round: number; version: number; students: number; publicityEnd: string }>('/publish/release', dto);
 export const incrementalPublish = (batchId: string) => post<{ refreshed: number; students?: string[]; note?: string }>('/publish/incremental', { batchId });
 export const fetchMyScore = (batchId?: string) => get<any>('/publish/scores/mine', batchId ? { batchId } : undefined);
+/** 本人有已发布成绩的全部批次（新→旧），查分页切换学期用 */
+export interface MyScoreBatch {
+  batchId: string;
+  name: string;
+  semesterKey: string;
+  status: string;
+  totalScore: number;
+}
+export const fetchMyScoreBatches = () => get<MyScoreBatch[]>('/publish/scores/mine/batches');
 
 /** 综测登记表导入（班级官方模板，固定格式） */
 export function importRegistration(batchId: string, file: File) {
@@ -190,7 +218,10 @@ export const fetchObjections = (batchId: string, status?: string) => get<any[]>(
 export const handleObjection = (id: string, dto: { status: 'ACCEPTED' | 'REJECTED'; note?: string }) => post(`/publish/objections/${id}/handle`, dto);
 
 // ---------- 导出 ----------
-export const createExport = (dto: { batchId: string; scope: 'CLASS' | 'GRADE' | 'ACADEMIC'; classId?: string; version?: number }) => post<{ jobId: string }>('/exports', dto);
+export const createExport = (dto: { batchId: string; scope: 'CLASS' | 'GRADE' | 'ACADEMIC' | 'MATERIALS'; classId?: string; version?: number }) => post<{ jobId: string }>('/exports', dto);
+/** 学生提交通道开关（服务端强制：关闭后学生无法提交加分申请/材料包） */
+export const fetchApplySwitch = () => get<{ enabled: boolean }>('/batches/apply-switch');
+export const updateApplySwitch = (enabled: boolean) => http.put('/batches/apply-switch', { enabled }).then((r) => r.data);
 export const fetchExportHistory = (batchId?: string) => get<any[]>('/exports/history', batchId ? { batchId } : undefined);
 
 // ---------- 看板 / 系统 ----------
@@ -200,3 +231,62 @@ export const createUser = (dto: { username: string; name: string; role: string; 
 export const updateUser = (id: string, dto: any) => patch(`/users/${id}`, dto);
 export const resetPwdBatch = (ids: string[]) => post<{ count: number }>('/users/reset-password-batch', { ids });
 export const fetchAuditLogs = (params: any) => get<{ items: any[]; total: number }>('/users/audit-logs', params);
+
+// ---------- 安全设置（登录密语口令） ----------
+export const fetchLoginPassphrase = () => get<{ value: string }>('/auth/passphrase');
+export const updateLoginPassphrase = (value: string) => http.put('/auth/passphrase', { value: value.trim() }).then((r) => r.data);
+
+// ---------- 奖学金评定 ----------
+export interface ScholarshipSemester {
+  semesterKey: string;
+  batchId: string | null;
+  batchName: string | null;
+  batchStatus: string | null;
+  source: 'PUBLISHED' | 'CALC' | 'NONE';
+  version: number | null;
+}
+export interface ScholarshipFailCourse {
+  semesterKey: string;
+  courseName: string;
+  credit: number;
+  score: string;
+  examType: string;
+  required: boolean;
+}
+export interface ScholarshipRow {
+  studentId: string;
+  studentNo: string;
+  name: string;
+  className: string;
+  major: string;
+  grade: number;
+  terms: (number | null)[];
+  sum: number | null;
+  fails: ScholarshipFailCourse[];
+  hasFail: boolean;
+  eligible: boolean;
+  reason: string | null;
+  rank: number | null;
+  award: string | null;
+  awardNote: string | null;
+}
+export interface ScholarshipResult {
+  academicYear: string;
+  failRule: 'STRICT' | 'ENGINE';
+  scope: { grade: number | null; major: string | null };
+  semesters: ScholarshipSemester[];
+  grades: number[];
+  majors: string[];
+  awardCounts: Record<string, number>;
+  rows: ScholarshipRow[];
+}
+export type ScholarshipQuery = { academicYear: string; grade?: number; major?: string; failRule?: 'STRICT' | 'ENGINE' };
+export const fetchScholarshipYears = () => get<{ academicYear: string; terms: { semesterKey: string; status: string }[] }[]>('/scholarships/years');
+export const fetchScholarships = (q: ScholarshipQuery) => get<ScholarshipResult>('/scholarships', q);
+export const setScholarshipAward = (dto: { academicYear: string; studentId: string; award: string | null; note?: string }) =>
+  http.put('/scholarships/awards', dto).then((r) => r.data);
+export const downloadScholarshipExport = (q: ScholarshipQuery) => {
+  const qs = new URLSearchParams(Object.entries(q).filter(([, v]) => v !== undefined && v !== '').map(([k, v]) => [k, String(v)]));
+  const scope = [q.grade ? `${q.grade}级` : '', q.major ?? ''].filter(Boolean).join('-');
+  return dl(`/scholarships/export?${qs}`, `${q.academicYear}学年奖学金评定${scope ? `-${scope}` : ''}.xlsx`);
+};

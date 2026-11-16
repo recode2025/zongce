@@ -73,9 +73,16 @@ export class UsersController {
   async update(@Param('id') id: string, @Body() dto: UpdateUserDto, @CurrentUser('id') operatorId: string, @ClientIp() ip: string) {
     const data: any = { name: dto.name, role: dto.role, status: dto.status, grade: dto.grade };
     if (dto.password) data.passwordHash = await argon2.hash(dto.password);
-    if (dto.password) data.mustChangePwd = dto.role !== Role.STUDENT;
+    if (dto.password) {
+      const current = await this.prisma.user.findUnique({ where: { id }, select: { role: true } });
+      data.mustChangePwd = (dto.role ?? current?.role) !== Role.STUDENT;
+    }
     Object.keys(data).forEach((k) => data[k] === undefined && delete data[k]);
-    await this.prisma.user.update({ where: { id }, data });
+    const invalidate = dto.password !== undefined || dto.role !== undefined || dto.status !== undefined || dto.grade !== undefined;
+    await this.prisma.$transaction(async (tx) => {
+      await tx.user.update({ where: { id }, data });
+      if (invalidate) await tx.refreshToken.updateMany({ where: { userId: id, revokedAt: null }, data: { revokedAt: new Date() } });
+    });
     await this.audit.log({ operatorId, action: 'USER_UPDATE', resourceType: 'user', resourceId: id, detail: { fields: Object.keys(dto) }, ip });
     return { success: true };
   }
@@ -87,7 +94,11 @@ export class UsersController {
     const students = await this.prisma.student.findMany({ where: { userId: { in: dto.ids } } });
     for (const s of students) {
       const pwd = initialPassword(s.studentNo);
-      await this.prisma.user.update({ where: { id: s.userId! }, data: { passwordHash: await argon2.hash(pwd), mustChangePwd: false, failedCount: 0, lockedUntil: null } });
+      const passwordHash = await argon2.hash(pwd);
+      await this.prisma.$transaction(async (tx) => {
+        await tx.user.update({ where: { id: s.userId! }, data: { passwordHash, mustChangePwd: false, failedCount: 0, lockedUntil: null } });
+        await tx.refreshToken.updateMany({ where: { userId: s.userId!, revokedAt: null }, data: { revokedAt: new Date() } });
+      });
     }
     await this.audit.log({ operatorId, action: 'USER_UPDATE', detail: { action: 'reset_password_batch', count: students.length }, ip });
     return { count: students.length };
