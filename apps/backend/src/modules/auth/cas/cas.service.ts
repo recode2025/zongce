@@ -153,7 +153,7 @@ export class CasService {
 
   /**
    * 跳转式 CAS：校验浏览器回跳带回的 ticket（/cas/proxyValidate）。
-   * service 必须与发起跳转时传给 CAS 的字符串完全一致（由调用方从缓存取回，避免重构漂移）。
+   * service 必须与发起跳转时传给 CAS 的字符串完全一致。
    */
   async validateTicket(ticket: string, serviceUrl: string): Promise<CasUserInfo> {
     const validateRes = await casFetch(`${env.casBase}/proxyValidate`, {

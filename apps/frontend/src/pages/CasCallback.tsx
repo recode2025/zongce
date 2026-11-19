@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { Alert, Button, Card, Result, Spin, Typography } from 'antd';
+import { Button, Card, Result, Space, Spin, Typography } from 'antd';
 import { useNavigate } from 'react-router-dom';
 import { get, setAccessToken, setRefreshToken } from '../api/client';
-import { markViaCas, studentLanding } from '../api';
+import { casAuthorizeUrl, markViaCas, studentLanding } from '../api';
 import { useAuth } from '../store/auth';
 
 /**
@@ -59,9 +59,14 @@ export default function CasCallback() {
               title="数字大外登录未完成"
               subTitle={error}
               extra={
-                <Button type="primary" size="large" onClick={() => nav('/login', { replace: true })}>
-                  返回登录
-                </Button>
+                <Space wrap>
+                  <Button type="primary" size="large" onClick={() => window.location.replace(casAuthorizeUrl())}>
+                    重新发起学校认证
+                  </Button>
+                  <Button size="large" onClick={() => nav('/login', { replace: true })}>
+                    返回登录页
+                  </Button>
+                </Space>
               }
             />
           </Card>

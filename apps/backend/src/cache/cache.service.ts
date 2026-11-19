@@ -43,12 +43,14 @@ export class CacheService implements OnModuleDestroy {
     this.mem.set(key, { value, expiresAt: ttlSec ? Date.now() + ttlSec * 1000 : null });
   }
 
-  async del(...keys: string[]): Promise<void> {
-    if (this.redis) {
-      if (keys.length) await this.redis.del(...keys);
-      return;
+  async del(...keys: string[]): Promise<number> {
+    if (!keys.length) return 0;
+    if (this.redis) return this.redis.del(...keys);
+    let deleted = 0;
+    for (const key of keys) {
+      if (this.mem.delete(key)) deleted++;
     }
-    keys.forEach((k) => this.mem.delete(k));
+    return deleted;
   }
 
   /** 批量 pipeline 写入（发布快照用） */

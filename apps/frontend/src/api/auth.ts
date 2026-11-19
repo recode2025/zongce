@@ -29,7 +29,9 @@ export function verifyPassphrase(passphrase: string) {
 /** 跳转式 CAS 登录入口（学生，无需密语；后端 302 → 学校统一认证页 → 回跳 /cas/callback） */
 export function casAuthorizeUrl(): string {
   const ru = `${window.location.origin}/cas/callback`;
-  return `/api/v1/auth/cas/authorize?ru=${encodeURIComponent(ru)}`;
+  // 避免浏览器或边缘节点复用携带旧 state 的授权跳转。
+  const attempt = crypto.getRandomValues(new Uint32Array(2)).join('-');
+  return `/api/v1/auth/cas/authorize?${new URLSearchParams({ ru, attempt })}`;
 }
 
 /** 公示期学生登录直跳查分页；其余回首页 */

@@ -1,12 +1,22 @@
-import { Body, Controller, Get, HttpCode, Post, Put, Query, Req, Res, UnauthorizedException } from '@nestjs/common';
+import { Body, Controller, Get, Header, HttpCode, Post, Put, Query, Req, Res, UnauthorizedException } from '@nestjs/common';
 import { IsOptional, IsString, MinLength } from 'class-validator';
 import { Request, Response } from 'express';
 import { randomBytes } from 'node:crypto';
 import { Role } from '@zc/shared';
 import { AuthService } from './auth.service';
+import { CasLoginStateService } from './cas/cas-login-state.service';
 import { ClientIp, CurrentUser, Public, Roles } from '../../common/decorators';
 import { CacheService } from '../../cache/cache.service';
 import { env } from '../../config/env';
+
+const CAS_CALLBACK_PATH = '/api/v1/auth/cas/callback';
+const CAS_STATE_TTL_SECONDS = 600;
+
+function casServiceUrl(ru: string, state: string) {
+  const url = new URL(CAS_CALLBACK_PATH, ru);
+  url.searchParams.set('state', state);
+  return url.toString();
+}
 
 class LoginDto {
   @IsString() @MinLength(1) username: string;
@@ -32,7 +42,7 @@ class UpdatePassphraseDto {
 
 @Controller('auth')
 export class AuthController {
-  constructor(private auth: AuthService, private cache: CacheService) {}
+  constructor(private auth: AuthService, private cache: CacheService, private casStates: CasLoginStateService) {}
 
   /** 图形验证码：返回 svg（前端内联渲染），5 分钟有效、一次性 */
   @Public()
@@ -96,36 +106,48 @@ export class AuthController {
 
   /**
    * 发起跳转：302 到学校 CAS 登录页（学生入口，无需密语口令）。
-   * ru = 前端回调页（校验其 origin ∈ CORS 白名单/本站），state 存缓存以便回调时取回 service 与 ru。
+   * 将白名单内的返回地址与本次浏览器绑定，任一后端实例均可处理回跳。
    */
   @Public()
   @Get('cas/authorize')
+  @Header('Cache-Control', 'private, no-store')
   async casAuthorize(@Query('ru') ru: string, @Req() req: Request, @Res() res: Response) {
+    if (req.method === 'HEAD') return res.status(204).end();
     const ruOk = this.sanitizeRu(ru, req);
     if (!ruOk) return res.status(400).send('回调地址不合法');
 
-    const state = randomBytes(16).toString('hex');
+    const state = `v2-${randomBytes(16).toString('hex')}`;
     const browserSecret = randomBytes(32).toString('hex');
     // service 走前端同源（dev 经 vite 代理 / prod 同域 nginx），保证 refresh cookie 落在前端域
-    const service = `${new URL(ruOk).origin}/api/v1/auth/cas/callback?state=${state}`;
-    await this.cache.set(`cas:state:${state}`, JSON.stringify({ service, ru: ruOk, browserSecret }), 600);
-    res.append('Set-Cookie', `zc_cas_${state}=${browserSecret}; Path=/api/v1/auth/cas/callback; HttpOnly; SameSite=Lax; Max-Age=600${env.isDev ? '' : '; Secure'}`);
+    const service = casServiceUrl(ruOk, state);
+    await this.casStates.create(state, browserSecret, ruOk, new Date(Date.now() + CAS_STATE_TTL_SECONDS * 1000));
+    res.cookie(`zc_cas_${state}`, browserSecret, {
+      path: CAS_CALLBACK_PATH, httpOnly: true, sameSite: 'lax', secure: !env.isDev, maxAge: CAS_STATE_TTL_SECONDS * 1000,
+    });
     return res.redirect(302, `${env.casBase}/login?service=${encodeURIComponent(service)}`);
   }
 
   /** CAS 回跳：ticket 换用户属性 → 签发会话 → 带 fragment 重定向回前端（token 不进 URL 查询串/服务端日志） */
   @Public()
   @Get('cas/callback')
+  @Header('Cache-Control', 'private, no-store')
   async casCallback(@Query('ticket') ticket: string, @Query('state') state: string, @Req() req: Request, @Res() res: Response) {
-    const raw = state ? await this.cache.get(`cas:state:${state}`) : null;
-    if (!raw) return res.status(400).send('登录状态已过期，请返回登录页重新登录');
-    const { service, ru, browserSecret } = JSON.parse(raw) as { service: string; ru: string; browserSecret?: string };
-    if (!browserSecret || (req as any).cookies?.[`zc_cas_${state}`] !== browserSecret) return res.status(400).send('登录状态不匹配，请返回登录页重新登录');
-    await this.cache.del(`cas:state:${state}`); // state 一次性
-    res.append('Set-Cookie', `zc_cas_${state}=; Path=/api/v1/auth/cas/callback; HttpOnly; SameSite=Lax; Max-Age=0${env.isDev ? '' : '; Secure'}`);
-    const fail = (msg: string) => this.casRedirect(res, ru, `error=${encodeURIComponent(msg)}`);
-
-    if (!ticket) return fail('学校认证未返回票据，请重新登录');
+    if (req.method === 'HEAD') return res.status(204).end();
+    const fail = (msg: string, ru = '/cas/callback') => this.casRedirect(res, ru, `error=${encodeURIComponent(msg)}`);
+    if (typeof ticket !== 'string' || !ticket.trim()) return fail('学校认证未返回票据，请重新登录');
+    if (typeof state !== 'string' || !/^(?:v2-)?[a-f0-9]{32}$/.test(state)) return fail('登录状态无效，请重新登录');
+    const cookieName = `zc_cas_${state}`;
+    const browserSecret = req.cookies?.[cookieName];
+    if (typeof browserSecret !== 'string' || !/^[a-f0-9]{64}$/.test(browserSecret)) {
+      return fail('登录状态已过期或浏览器不匹配，请在当前浏览器重新登录');
+    }
+    const pending = state.startsWith('v2-')
+      ? await this.casStates.consume(state, browserSecret)
+      : await this.consumeLegacyCasState(state, browserSecret);
+    if (!pending) return fail('登录状态已过期或已使用，请重新登录');
+    const { ru } = pending;
+    const service = casServiceUrl(ru, state);
+    res.clearCookie(cookieName, { path: CAS_CALLBACK_PATH, httpOnly: true, sameSite: 'lax', secure: !env.isDev });
     const ip = req.ip || 'unknown';
     const ua = String(req.headers['user-agent'] ?? '');
     try {
@@ -134,8 +156,18 @@ export class AuthController {
       const frag = new URLSearchParams({ token: r.accessToken, rt: r.refreshToken, name: r.user.name });
       return this.casRedirect(res, ru, frag.toString());
     } catch (e) {
-      return fail(e instanceof Error ? e.message : '学校统一认证失败');
+      return fail(e instanceof Error ? e.message : '学校统一认证失败', ru);
     }
+  }
+
+  /** 接受升级前十分钟内已签发且仍在缓存中的登录请求。 */
+  private async consumeLegacyCasState(state: string, browserSecret: string): Promise<{ ru: string } | null> {
+    const key = `cas:state:${state}`;
+    const raw = await this.cache.get(key);
+    if (!raw) return null;
+    const pending = JSON.parse(raw) as { browserSecret?: string; ru: string };
+    if (pending.browserSecret !== browserSecret || !(await this.cache.del(key))) return null;
+    return { ru: pending.ru };
   }
 
   /**

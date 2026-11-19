@@ -424,6 +424,15 @@ model ZipEntry {
 
 // ============ 令牌 / 审计 / 通知 ============
 
+model CasLoginState {
+  state             String   @id @db.VarChar(64)
+  browserSecretHash String   @db.Char(64)
+  ru                String   @db.Text
+  expiresAt         DateTime
+
+  @@index([expiresAt])
+}
+
 model RefreshToken {
   id           String    @id @default(cuid())
   userId       String
